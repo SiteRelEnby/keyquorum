@@ -1,0 +1,15 @@
+[package]
+name = "keyquorum-core"
+version = "0.1.0"
+edition = "2021"
+description = "Shared library for keyquorum - types, protocol, memory security, config"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+zeroize = { version = "1", features = ["zeroize_derive"] }
+libc = "0.2"
+sharks = "0.5"
+base64 = "0.22"
+thiserror = "2"

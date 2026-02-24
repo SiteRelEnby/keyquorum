@@ -1,0 +1,52 @@
+# keyquorum configuration
+#
+# Copy this to /etc/keyquorum/config.toml (or pass -c /path/to/config.toml)
+
+[daemon]
+# Unix domain socket path (always created)
+socket_path = "/run/keyquorum/keyquorum.sock"
+
+# Optional: also listen on TCP localhost
+# Useful for SSM port forwarding or similar setups.
+# Comment out to disable TCP entirely.
+# tcp_port = 9876
+
+[session]
+# Minimum shares needed to reconstruct the secret (K)
+threshold = 3
+
+# Total shares that were generated (N) — informational only
+total_shares = 5
+
+# Timeout in seconds. If quorum is not reached within this window,
+# all collected shares are securely wiped and the session resets.
+# Default: 1800 (30 minutes)
+timeout_secs = 1800
+
+# Action to perform when quorum is reached.
+# Choose one of: luks, stdout, command
+
+[action]
+type = "luks"
+device = "/dev/sda2"
+name = "cryptdata"
+
+# --- OR: write reconstructed secret to daemon's stdout ---
+# [action]
+# type = "stdout"
+
+# --- OR: pipe secret to stdin of an arbitrary command ---
+# [action]
+# type = "command"
+# program = "/usr/local/bin/unseal-vault"
+# args = ["--cluster", "prod"]
+
+[logging]
+# Whether to log who submitted shares (user, timestamp, index).
+# Some deployments deliberately want NO participation records.
+# Default: false
+log_participation = false
+
+# Log level: trace, debug, info, warn, error
+# Can also be set via RUST_LOG environment variable.
+level = "info"

@@ -1,0 +1,12 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/keyquorum-core",
+    "crates/keyquorum",
+    "crates/keyquorum-split",
+]
+
+[profile.release]
+opt-level = 2
+strip = true
+lto = true
