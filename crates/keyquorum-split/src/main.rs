@@ -1,8 +1,9 @@
 use anyhow::{bail, Result};
 use base64::Engine;
-use clap::Parser;
+use clap::{Parser, ValueEnum};
 use sharks::Sharks;
 use std::io::Read;
+use std::path::PathBuf;
 use zeroize::Zeroize;
 
 #[derive(Parser)]
@@ -14,6 +15,23 @@ struct Cli {
     /// Minimum shares needed to reconstruct (2-N)
     #[arg(short = 'k', long)]
     threshold: u8,
+    /// Output mode
+    #[arg(short, long, value_enum, default_value_t = OutputMode::Stdout)]
+    output: OutputMode,
+    /// Output directory for file-per-share mode
+    #[arg(short, long)]
+    dir: Option<PathBuf>,
+}
+
+#[derive(Clone, ValueEnum)]
+enum OutputMode {
+    /// All shares to stdout (labels to stderr)
+    Stdout,
+    /// One file per share in the output directory
+    Files,
+    // Future modes:
+    // Interactive — show one at a time, clear between
+    // Age — encrypt each share to a recipient's age public key
 }
 
 fn main() -> Result<()> {
@@ -30,6 +48,10 @@ fn main() -> Result<()> {
             cli.threshold,
             cli.shares
         );
+    }
+
+    if matches!(cli.output, OutputMode::Files) && cli.dir.is_none() {
+        bail!("--dir is required when using --output files");
     }
 
     // Read secret from stdin
@@ -53,8 +75,21 @@ fn main() -> Result<()> {
     let dealer = sharks.dealer(&secret);
     let shares: Vec<sharks::Share> = dealer.take(cli.shares as usize).collect();
 
-    // Output each share
+    // Output shares
     let engine = base64::engine::general_purpose::STANDARD;
+    match cli.output {
+        OutputMode::Stdout => output_stdout(&shares, &engine),
+        OutputMode::Files => output_files(&shares, &engine, cli.dir.as_ref().unwrap())?,
+    }
+
+    // Zeroize secret
+    secret.zeroize();
+    let _ = keyquorum_core::memory::munlock_slice(&secret);
+
+    Ok(())
+}
+
+fn output_stdout(shares: &[sharks::Share], engine: &base64::engine::GeneralPurpose) {
     for (i, share) in shares.iter().enumerate() {
         let bytes: Vec<u8> = Vec::from(share);
         let index = bytes[0];
@@ -62,10 +97,35 @@ fn main() -> Result<()> {
         eprintln!("Share {} (index {}):", i + 1, index);
         println!("{}", encoded);
     }
+}
 
-    // Zeroize secret
-    secret.zeroize();
-    let _ = keyquorum_core::memory::munlock_slice(&secret);
+fn output_files(
+    shares: &[sharks::Share],
+    engine: &base64::engine::GeneralPurpose,
+    dir: &PathBuf,
+) -> Result<()> {
+    std::fs::create_dir_all(dir)?;
+
+    for (i, share) in shares.iter().enumerate() {
+        let bytes: Vec<u8> = Vec::from(share);
+        let index = bytes[0];
+        let encoded = engine.encode(&bytes);
+        let filename = dir.join(format!("share-{}.txt", i + 1));
+        std::fs::write(&filename, format!("{}\n", encoded))?;
+        eprintln!(
+            "Share {} (index {}) written to {}",
+            i + 1,
+            index,
+            filename.display()
+        );
+    }
+
+    eprintln!(
+        "\n{} share files written to {}",
+        shares.len(),
+        dir.display()
+    );
+    eprintln!("Distribute each file to its holder, then delete this directory.");
 
     Ok(())
 }
