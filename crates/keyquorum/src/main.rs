@@ -7,7 +7,8 @@ use std::path::PathBuf;
 #[derive(Parser)]
 #[command(
     name = "keyquorum",
-    about = "Shamir secret sharing daemon for distributed key quorum"
+    about = "Shamir secret sharing daemon for distributed key quorum",
+    version
 )]
 struct Cli {
     #[command(subcommand)]
@@ -30,16 +31,35 @@ enum Commands {
         /// Your identifier (optional, for participation logging)
         #[arg(short = 'u', long)]
         user: Option<String>,
-        /// Socket path or tcp://host:port
-        #[arg(long, default_value = "/run/keyquorum/keyquorum.sock")]
-        socket: String,
+        /// Socket path or tcp://host:port (overrides config)
+        #[arg(long)]
+        socket: Option<String>,
+        /// Path to config file (reads socket_path from it)
+        #[arg(short, long)]
+        config: Option<PathBuf>,
     },
     /// Query the current session status
     Status {
-        /// Socket path or tcp://host:port
-        #[arg(long, default_value = "/run/keyquorum/keyquorum.sock")]
-        socket: String,
+        /// Socket path or tcp://host:port (overrides config)
+        #[arg(long)]
+        socket: Option<String>,
+        /// Path to config file (reads socket_path from it)
+        #[arg(short, long)]
+        config: Option<PathBuf>,
     },
+}
+
+/// Resolve the socket address: --socket wins, then --config, then default.
+fn resolve_socket(socket: Option<String>, config: Option<PathBuf>) -> anyhow::Result<String> {
+    if let Some(s) = socket {
+        return Ok(s);
+    }
+    if let Some(path) = config {
+        let cfg = keyquorum_core::config::Config::from_file(&path)
+            .map_err(|e| anyhow::anyhow!("failed to load config from {}: {}", path.display(), e))?;
+        return Ok(cfg.daemon.socket_path.to_string_lossy().into_owned());
+    }
+    Ok("/run/keyquorum/keyquorum.sock".to_string())
 }
 
 #[tokio::main]
@@ -51,7 +71,14 @@ async fn main() -> anyhow::Result<()> {
             share,
             user,
             socket,
-        } => client::submit::run(share, user, socket).await,
-        Commands::Status { socket } => client::status::run(socket).await,
+            config,
+        } => {
+            let socket = resolve_socket(socket, config)?;
+            client::submit::run(share, user, socket).await
+        }
+        Commands::Status { socket, config } => {
+            let socket = resolve_socket(socket, config)?;
+            client::status::run(socket).await
+        }
     }
 }

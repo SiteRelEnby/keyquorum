@@ -1,6 +1,6 @@
 [package]
 name = "keyquorum-split"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 edition = "2021"
 description = "Split a secret into Shamir shares for use with keyquorum"
 

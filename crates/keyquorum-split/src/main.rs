@@ -6,7 +6,7 @@ use std::io::Read;
 use zeroize::Zeroize;
 
 #[derive(Parser)]
-#[command(name = "keyquorum-split", about = "Split a secret into Shamir shares")]
+#[command(name = "keyquorum-split", about = "Split a secret into Shamir shares", version)]
 struct Cli {
     /// Total number of shares to generate (2-255)
     #[arg(short = 'n', long)]

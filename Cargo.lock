@@ -215,7 +215,7 @@ checksum = "92ecc6618181def0457392ccd0ee51198e065e016d1d527a7ac1b6dc7c1f09d2"
 
 [[package]]
 name = "keyquorum"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "anyhow",
  "base64",
@@ -231,7 +231,7 @@ dependencies = [
 
 [[package]]
 name = "keyquorum-core"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "base64",
  "libc",
@@ -245,7 +245,7 @@ dependencies = [
 
 [[package]]
 name = "keyquorum-split"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "anyhow",
  "base64",
