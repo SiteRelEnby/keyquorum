@@ -79,7 +79,9 @@ fn main() -> Result<()> {
     let engine = base64::engine::general_purpose::STANDARD;
     match cli.output {
         OutputMode::Stdout => output_stdout(&shares, &engine),
-        OutputMode::Files => output_files(&shares, &engine, cli.dir.as_ref().unwrap())?,
+        OutputMode::Files => {
+            output_files(&shares, &engine, cli.dir.as_ref().expect("validated above"))?
+        }
     }
 
     // Zeroize secret
@@ -104,14 +106,18 @@ fn output_files(
     engine: &base64::engine::GeneralPurpose,
     dir: &PathBuf,
 ) -> Result<()> {
-    std::fs::create_dir_all(dir)?;
+    std::fs::create_dir_all(dir).map_err(|e| {
+        anyhow::anyhow!("failed to create output directory {}: {}", dir.display(), e)
+    })?;
 
     for (i, share) in shares.iter().enumerate() {
         let bytes: Vec<u8> = Vec::from(share);
         let index = bytes[0];
         let encoded = engine.encode(&bytes);
         let filename = dir.join(format!("share-{}.txt", i + 1));
-        std::fs::write(&filename, format!("{}\n", encoded))?;
+        std::fs::write(&filename, format!("{}\n", encoded)).map_err(|e| {
+            anyhow::anyhow!("failed to write {}: {}", filename.display(), e)
+        })?;
         eprintln!(
             "Share {} (index {}) written to {}",
             i + 1,

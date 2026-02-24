@@ -17,28 +17,44 @@ pub async fn run_listeners(
     // Clean up stale socket file if it exists
     let socket_path = &config.socket_path;
     if socket_path.exists() {
-        std::fs::remove_file(socket_path)?;
+        std::fs::remove_file(socket_path).map_err(|e| {
+            anyhow::anyhow!("failed to remove stale socket {}: {}", socket_path.display(), e)
+        })?;
     }
 
     // Ensure parent directory exists
     if let Some(parent) = socket_path.parent() {
-        std::fs::create_dir_all(parent)?;
+        std::fs::create_dir_all(parent).map_err(|e| {
+            anyhow::anyhow!("failed to create socket directory {}: {}", parent.display(), e)
+        })?;
     }
 
-    let unix_listener = UnixListener::bind(socket_path)?;
+    let unix_listener = UnixListener::bind(socket_path).map_err(|e| {
+        anyhow::anyhow!("failed to bind Unix socket {}: {}", socket_path.display(), e)
+    })?;
 
     // Set socket permissions to 0o660
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(socket_path, std::fs::Permissions::from_mode(0o660))?;
+        std::fs::set_permissions(socket_path, std::fs::Permissions::from_mode(0o660)).map_err(
+            |e| {
+                anyhow::anyhow!(
+                    "failed to set permissions on {}: {}",
+                    socket_path.display(),
+                    e
+                )
+            },
+        )?;
     }
 
     info!(path = %socket_path.display(), "listening on Unix socket");
 
     if let Some(port) = config.tcp_port {
         let bind_addr = format!("127.0.0.1:{}", port);
-        let tcp_listener = TcpListener::bind(&bind_addr).await?;
+        let tcp_listener = TcpListener::bind(&bind_addr).await.map_err(|e| {
+            anyhow::anyhow!("failed to bind TCP listener on {}: {}", bind_addr, e)
+        })?;
         info!(addr = %bind_addr, "listening on TCP");
 
         // Run both listeners concurrently

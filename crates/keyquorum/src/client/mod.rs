@@ -35,10 +35,14 @@ impl Connection {
 /// Otherwise treat it as a Unix socket path.
 pub async fn connect(addr: &str) -> Result<Connection> {
     if let Some(tcp_addr) = addr.strip_prefix("tcp://") {
-        let stream = TcpStream::connect(tcp_addr).await?;
+        let stream = TcpStream::connect(tcp_addr)
+            .await
+            .map_err(|e| anyhow::anyhow!("failed to connect to {}: {}", addr, e))?;
         Ok(Connection::Tcp(stream))
     } else {
-        let stream = UnixStream::connect(addr).await?;
+        let stream = UnixStream::connect(addr)
+            .await
+            .map_err(|e| anyhow::anyhow!("failed to connect to {}: {}", addr, e))?;
         Ok(Connection::Unix(stream))
     }
 }
