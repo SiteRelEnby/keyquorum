@@ -2,6 +2,8 @@
 name = "keyquorum"
 version = "0.1.0-alpha.1"
 edition = "2021"
+license = "Apache-2.0"
+repository = "https://github.com/SiteRelEnby/keyquorum"
 description = "Shamir secret sharing daemon for distributed key quorum"
 
 [dependencies]

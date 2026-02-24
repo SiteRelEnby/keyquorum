@@ -9,7 +9,7 @@ socket_path = "/run/keyquorum/keyquorum.sock"
 # Optional: also listen on TCP localhost
 # Useful for SSM port forwarding or similar setups.
 # Comment out to disable TCP entirely.
-# tcp_port = 9876
+# tcp_port = 35000
 
 [session]
 # Minimum shares needed to reconstruct the secret (K)

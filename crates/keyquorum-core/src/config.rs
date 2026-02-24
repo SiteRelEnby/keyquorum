@@ -109,7 +109,7 @@ mod tests {
         let toml = r#"
 [daemon]
 socket_path = "/tmp/test.sock"
-tcp_port = 9876
+tcp_port = 35000
 
 [session]
 threshold = 3
@@ -131,7 +131,7 @@ level = "debug"
         assert_eq!(config.session.timeout_secs, 600);
         assert!(matches!(config.action, ActionConfig::Luks { .. }));
         assert!(config.logging.log_participation);
-        assert_eq!(config.daemon.tcp_port, Some(9876));
+        assert_eq!(config.daemon.tcp_port, Some(35000));
     }
 
     #[test]

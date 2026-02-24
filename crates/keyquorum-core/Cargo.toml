@@ -2,6 +2,8 @@
 name = "keyquorum-core"
 version = "0.1.0-alpha.1"
 edition = "2021"
+license = "Apache-2.0"
+repository = "https://github.com/SiteRelEnby/keyquorum"
 description = "Shared library for keyquorum - types, protocol, memory security, config"
 
 [dependencies]
