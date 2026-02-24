@@ -238,8 +238,6 @@ pub async fn run_session(
     log_participation: bool,
 ) {
     let mut session = Session::new(config, action_config, log_participation);
-    // Clients waiting for quorum result (submitted the threshold-reaching share or later)
-    let mut waiting_clients: Vec<oneshot::Sender<DaemonMessage>> = Vec::new();
 
     loop {
         let timeout_future = async {
@@ -257,35 +255,21 @@ pub async fn run_session(
                     SessionCommand::SubmitShare { share, respond_to } => {
                         let response = session.submit_share(share);
 
-                        // If threshold just reached, kick off reconstruction
+                        // If this share was rejected, send rejection immediately
+                        if matches!(response, DaemonMessage::ShareRejected { .. }) {
+                            let _ = respond_to.send(response);
+                            continue;
+                        }
+
+                        // If threshold reached, reconstruct before responding
+                        // so the submitting client gets the action result
                         if session.shares.len() as u8 >= session.config.threshold
                             && session.state == SessionState::Collecting
                         {
-                            // Send the "accepted" status first
-                            let _ = respond_to.send(response);
-
-                            // Reconstruct and execute
                             if let Some(quorum_msg) = session.try_reconstruct().await {
-                                // Notify all waiting clients
-                                for sender in waiting_clients.drain(..) {
-                                    let _ = sender.send(DaemonMessage::QuorumReached {
-                                        action_result: match &quorum_msg {
-                                            DaemonMessage::QuorumReached { action_result } => {
-                                                match action_result {
-                                                    ActionResult::Success { message } => {
-                                                        ActionResult::Success { message: message.clone() }
-                                                    }
-                                                    ActionResult::Failure { message } => {
-                                                        ActionResult::Failure { message: message.clone() }
-                                                    }
-                                                }
-                                            }
-                                            _ => ActionResult::Failure {
-                                                message: "Unexpected state".to_string(),
-                                            },
-                                        },
-                                    });
-                                }
+                                let _ = respond_to.send(quorum_msg);
+                            } else {
+                                let _ = respond_to.send(response);
                             }
                         } else {
                             let _ = respond_to.send(response);
@@ -300,12 +284,6 @@ pub async fn run_session(
             }
             _ = timeout_future => {
                 session.handle_timeout();
-                // Notify any waiting clients
-                for sender in waiting_clients.drain(..) {
-                    let _ = sender.send(DaemonMessage::Error {
-                        message: "Session timed out, all shares wiped".to_string(),
-                    });
-                }
             }
         }
     }
