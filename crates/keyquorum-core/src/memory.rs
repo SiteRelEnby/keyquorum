@@ -102,7 +102,7 @@ mod tests {
     #[test]
     fn page_align_region_works() {
         let ps = page_size();
-        let buf = vec![0u8; 100];
+        let buf = [0u8; 100];
         let (aligned_ptr, aligned_len) = page_align_region(buf.as_ptr(), buf.len());
         let aligned_addr = aligned_ptr as usize;
         assert_eq!(aligned_addr % ps, 0, "address should be page-aligned");

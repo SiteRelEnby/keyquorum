@@ -76,7 +76,7 @@ async fn write_message<W: AsyncWrite + Unpin>(
     writer: &mut W,
     msg: &DaemonMessage,
 ) -> std::io::Result<()> {
-    let mut json = serde_json::to_string(msg).map_err(|e| std::io::Error::other(e))?;
+    let mut json = serde_json::to_string(msg).map_err(std::io::Error::other)?;
     json.push('\n');
     writer.write_all(json.as_bytes()).await?;
     writer.flush().await?;

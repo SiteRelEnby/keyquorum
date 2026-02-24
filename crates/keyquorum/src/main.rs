@@ -1,7 +1,5 @@
-mod client;
-mod daemon;
-
 use clap::{Parser, Subcommand};
+use keyquorum::{client, daemon};
 use std::path::PathBuf;
 
 #[derive(Parser)]
