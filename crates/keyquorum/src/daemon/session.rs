@@ -97,9 +97,12 @@ impl Session {
             };
         }
 
+        // Normalize whitespace from share data (copy-paste often introduces spaces/newlines)
+        let cleaned: String = share.data.chars().filter(|c| !c.is_whitespace()).collect();
+
         // Decode base64 to raw bytes
         let engine = base64::engine::general_purpose::STANDARD;
-        let bytes = match engine.decode(&share.data) {
+        let bytes = match engine.decode(&cleaned) {
             Ok(b) => b,
             Err(e) => {
                 return DaemonMessage::ShareRejected {
