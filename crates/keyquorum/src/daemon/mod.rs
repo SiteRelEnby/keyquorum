@@ -49,8 +49,16 @@ pub async fn run(config_path: PathBuf, lockdown: bool) -> anyhow::Result<()> {
     let session_config = config.session.clone();
     let action_config = config.action.clone();
     let log_participation = config.logging.log_participation;
+    let session_lockdown = config.daemon.lockdown;
     tokio::spawn(async move {
-        session::run_session(session_rx, session_config, action_config, log_participation).await;
+        session::run_session(
+            session_rx,
+            session_config,
+            action_config,
+            log_participation,
+            session_lockdown,
+        )
+        .await;
     });
 
     // Set up signal handler for graceful shutdown

@@ -59,7 +59,7 @@ impl TestDaemon {
 
         // Spawn session task
         let session_handle = tokio::spawn(async move {
-            run_session(session_rx, session_config, action_config, false).await;
+            run_session(session_rx, session_config, action_config, false, false).await;
         });
 
         // Spawn listener task

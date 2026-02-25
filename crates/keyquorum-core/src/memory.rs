@@ -12,6 +12,18 @@ pub fn disable_core_dumps() -> io::Result<()> {
     Ok(())
 }
 
+/// Prevent exec'd child processes from gaining new privileges.
+/// Blocks setuid/setgid, Linux Security Module transitions, etc.
+pub fn set_no_new_privs() -> io::Result<()> {
+    unsafe {
+        let ret = libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0);
+        if ret != 0 {
+            return Err(io::Error::last_os_error());
+        }
+    }
+    Ok(())
+}
+
 /// Lock a memory region so it is never swapped to disk.
 pub fn mlock_slice(data: &[u8]) -> io::Result<()> {
     if data.is_empty() {
@@ -55,9 +67,43 @@ pub fn madvise_dontfork(data: &[u8]) -> io::Result<()> {
     Ok(())
 }
 
+/// Mark memory pages as DONTDUMP to exclude them from core dumps.
+/// Complements PR_SET_DUMPABLE — if dumpable is re-enabled later (e.g. by
+/// a signal handler), these pages are still excluded.
+pub fn madvise_dontdump(data: &[u8]) -> io::Result<()> {
+    if data.is_empty() {
+        return Ok(());
+    }
+    let (aligned_ptr, aligned_len) = page_align_region(data.as_ptr(), data.len());
+    unsafe {
+        let ret = libc::madvise(aligned_ptr, aligned_len, libc::MADV_DONTDUMP);
+        if ret != 0 {
+            return Err(io::Error::last_os_error());
+        }
+    }
+    Ok(())
+}
+
+/// Apply all memory protections to a buffer containing secret material.
+/// Returns a list of any protections that failed (empty = all succeeded).
+pub fn protect_secret(data: &[u8]) -> Vec<(&'static str, io::Error)> {
+    let mut failures = Vec::new();
+    if let Err(e) = mlock_slice(data) {
+        failures.push(("mlock", e));
+    }
+    if let Err(e) = madvise_dontfork(data) {
+        failures.push(("madvise(DONTFORK)", e));
+    }
+    if let Err(e) = madvise_dontdump(data) {
+        failures.push(("madvise(DONTDUMP)", e));
+    }
+    failures
+}
+
 /// Call all hardening functions at process startup.
 pub fn harden_process() -> io::Result<()> {
     disable_core_dumps()?;
+    set_no_new_privs()?;
     Ok(())
 }
 
@@ -111,5 +157,27 @@ mod tests {
             aligned_len >= buf.len(),
             "aligned length should cover the buffer"
         );
+    }
+
+    #[test]
+    fn protect_secret_on_small_buffer() {
+        let buf = vec![0u8; 64];
+        let failures = protect_secret(&buf);
+        // May fail on RLIMIT_MEMLOCK, but should not panic
+        for (name, err) in &failures {
+            eprintln!("protect_secret: {} failed: {} (non-fatal in test)", name, err);
+        }
+    }
+
+    #[test]
+    fn set_no_new_privs_succeeds() {
+        set_no_new_privs().unwrap();
+    }
+
+    #[test]
+    fn madvise_dontdump_works() {
+        let buf = vec![0u8; 64];
+        // Should succeed on Linux
+        madvise_dontdump(&buf).unwrap();
     }
 }

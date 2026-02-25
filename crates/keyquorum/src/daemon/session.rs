@@ -42,10 +42,16 @@ struct Session {
     started_at: Option<Instant>,
     log_participation: bool,
     retry_attempts: u8,
+    lockdown: bool,
 }
 
 impl Session {
-    fn new(config: SessionConfig, action_config: ActionConfig, log_participation: bool) -> Self {
+    fn new(
+        config: SessionConfig,
+        action_config: ActionConfig,
+        log_participation: bool,
+        lockdown: bool,
+    ) -> Self {
         Self {
             config,
             action_config,
@@ -55,6 +61,7 @@ impl Session {
             started_at: None,
             log_participation,
             retry_attempts: 0,
+            lockdown,
         }
     }
 
@@ -137,9 +144,19 @@ impl Session {
             };
         }
 
-        // Lock share bytes in memory
-        let _ = keyquorum_core::memory::mlock_slice(&bytes);
-        let _ = keyquorum_core::memory::madvise_dontfork(&bytes);
+        // Apply memory protections to share bytes
+        let failures = keyquorum_core::memory::protect_secret(&bytes);
+        if !failures.is_empty() {
+            for (name, err) in &failures {
+                warn!("memory protection {} failed for share data: {}", name, err);
+            }
+            if self.lockdown {
+                return DaemonMessage::ShareRejected {
+                    reason: "lockdown mode: failed to apply memory protections to share data"
+                        .to_string(),
+                };
+            }
+        }
 
         // Log participation if enabled (never log share data)
         if self.log_participation {
@@ -208,9 +225,23 @@ impl Session {
                 Err(_) => continue,
             };
 
-            // mlock the reconstructed secret
-            let _ = keyquorum_core::memory::mlock_slice(&secret);
-            let _ = keyquorum_core::memory::madvise_dontfork(&secret);
+            // Apply memory protections to reconstructed secret
+            let failures = keyquorum_core::memory::protect_secret(&secret);
+            if !failures.is_empty() {
+                for (name, err) in &failures {
+                    warn!("memory protection {} failed for reconstructed secret: {}", name, err);
+                }
+                if self.lockdown {
+                    secret.zeroize();
+                    self.state = SessionState::Failed;
+                    self.reset();
+                    return Some(DaemonMessage::QuorumReached {
+                        action_result: ActionResult::Failure {
+                            message: "lockdown mode: failed to apply memory protections to reconstructed secret".to_string(),
+                        },
+                    });
+                }
+            }
 
             // Execute the configured action
             let result = action::execute(&self.action_config, &secret).await;
@@ -341,8 +372,9 @@ pub async fn run_session(
     config: SessionConfig,
     action_config: ActionConfig,
     log_participation: bool,
+    lockdown: bool,
 ) {
-    let mut session = Session::new(config, action_config, log_participation);
+    let mut session = Session::new(config, action_config, log_participation, lockdown);
 
     loop {
         let timeout_future = async {
@@ -427,6 +459,7 @@ mod tests {
                 max_retries: 3,
             },
             ActionConfig::Stdout,
+            false,
             false,
         )
     }
@@ -709,6 +742,7 @@ mod tests {
                 args: vec![],
             },
             false,
+            false,
         );
 
         let shares = make_shares(b"retry-test", 2, 3);
@@ -758,6 +792,7 @@ mod tests {
                 args: vec![],
             },
             false,
+            false,
         );
 
         let shares = make_shares(b"exhaust-test", 2, 4);
@@ -806,6 +841,7 @@ mod tests {
                 program: "/bin/false".to_string(),
                 args: vec![],
             },
+            false,
             false,
         );
 

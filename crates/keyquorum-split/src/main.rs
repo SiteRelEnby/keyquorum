@@ -74,8 +74,16 @@ fn main() -> Result<()> {
         bail!("no secret provided on stdin");
     }
 
-    // mlock the secret buffer
-    let _ = keyquorum_core::memory::mlock_slice(&secret);
+    // Apply memory protections to the secret buffer
+    let failures = keyquorum_core::memory::protect_secret(&secret);
+    if !failures.is_empty() {
+        for (name, err) in &failures {
+            eprintln!("warning: memory protection {} failed: {}", name, err);
+        }
+        if cli.lockdown {
+            bail!("lockdown mode: failed to apply memory protections to secret");
+        }
+    }
 
     // Generate shares
     let sharks = Sharks(cli.threshold);
@@ -91,9 +99,11 @@ fn main() -> Result<()> {
         }
     }
 
-    // Zeroize secret
+    // Zeroize and unlock secret
     secret.zeroize();
-    let _ = keyquorum_core::memory::munlock_slice(&secret);
+    if let Err(e) = keyquorum_core::memory::munlock_slice(&secret) {
+        eprintln!("warning: munlock failed: {}", e);
+    }
 
     Ok(())
 }
