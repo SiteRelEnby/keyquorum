@@ -1,9 +1,14 @@
-use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader};
 use tokio::sync::{mpsc, oneshot};
 use tracing::{debug, warn};
 
 use super::session::SessionCommand;
 use keyquorum_core::protocol::{ClientMessage, DaemonMessage};
+
+/// Maximum size of a single JSON message line (64 KB).
+/// A base64-encoded share is ~350 bytes; this leaves ample room
+/// while preventing memory exhaustion from oversized payloads.
+const MAX_LINE_LENGTH: usize = 64 * 1024;
 
 /// Handle a single client connection. Reads newline-delimited JSON,
 /// dispatches to the session task, and writes responses.
@@ -15,9 +20,24 @@ pub async fn handle_connection<R, W>(
     R: AsyncRead + Unpin,
     W: AsyncWrite + Unpin,
 {
-    let mut lines = BufReader::new(reader).lines();
+    let mut buf_reader = BufReader::new(reader);
 
-    while let Ok(Some(line)) = lines.next_line().await {
+    loop {
+        let line = match read_limited_line(&mut buf_reader).await {
+            Ok(Some(line)) => line,
+            Ok(None) => break, // EOF
+            Err(e) => {
+                let _ = write_message(
+                    &mut writer,
+                    &DaemonMessage::Error {
+                        message: format!("{}", e),
+                    },
+                )
+                .await;
+                break;
+            }
+        };
+
         if line.trim().is_empty() {
             continue;
         }
@@ -70,6 +90,45 @@ pub async fn handle_connection<R, W>(
             }
         }
     }
+}
+
+/// Read a single newline-terminated line, rejecting lines that exceed MAX_LINE_LENGTH.
+/// Returns Ok(None) on EOF, Ok(Some(line)) on success, Err on oversized or invalid data.
+async fn read_limited_line<R: AsyncBufRead + Unpin>(
+    reader: &mut R,
+) -> std::io::Result<Option<String>> {
+    let mut line = Vec::new();
+    loop {
+        let buf = reader.fill_buf().await?;
+        if buf.is_empty() {
+            if line.is_empty() {
+                return Ok(None);
+            }
+            break;
+        }
+        let found_newline = if let Some(pos) = buf.iter().position(|&b| b == b'\n') {
+            line.extend_from_slice(&buf[..pos]);
+            reader.consume(pos + 1);
+            true
+        } else {
+            line.extend_from_slice(buf);
+            let len = buf.len();
+            reader.consume(len);
+            false
+        };
+        if line.len() > MAX_LINE_LENGTH {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("Message exceeds maximum size of {} bytes", MAX_LINE_LENGTH),
+            ));
+        }
+        if found_newline {
+            break;
+        }
+    }
+    String::from_utf8(line)
+        .map(Some)
+        .map_err(|_| std::io::Error::new(std::io::ErrorKind::InvalidData, "Invalid UTF-8"))
 }
 
 async fn write_message<W: AsyncWrite + Unpin>(

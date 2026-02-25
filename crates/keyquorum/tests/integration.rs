@@ -317,3 +317,72 @@ async fn multiple_messages_on_same_connection() {
         other => panic!("expected Status, got {:?}", serde_json::to_string(&other).unwrap()),
     }
 }
+
+#[tokio::test]
+async fn oversized_message_disconnects() {
+    let daemon = TestDaemon::start(2, 3, 60).await;
+
+    let mut conn = UnixStream::connect(&daemon.socket_path).await.unwrap();
+
+    // Send a line larger than 64 KB
+    let huge = "x".repeat(70 * 1024);
+    conn.write_all(huge.as_bytes()).await.unwrap();
+    conn.write_all(b"\n").await.unwrap();
+    conn.flush().await.unwrap();
+
+    // The daemon should send an error and close the connection
+    let mut buf = Vec::new();
+    let mut byte = [0u8; 1];
+    loop {
+        match tokio::io::AsyncReadExt::read(&mut conn, &mut byte).await {
+            Ok(0) => break, // EOF — connection closed
+            Ok(1) => {
+                buf.push(byte[0]);
+                if byte[0] == b'\n' {
+                    break;
+                }
+            }
+            _ => break,
+        }
+    }
+
+    // Should get an error message about size, or connection should be closed
+    if !buf.is_empty() {
+        let resp: DaemonMessage = serde_json::from_slice(&buf).unwrap();
+        match resp {
+            DaemonMessage::Error { message } => {
+                assert!(
+                    message.contains("maximum size"),
+                    "error should mention size limit: {}",
+                    message
+                );
+            }
+            other => panic!(
+                "expected Error, got {:?}",
+                serde_json::to_string(&other).unwrap()
+            ),
+        }
+    }
+    // Either way, connection should be closed after this
+}
+
+#[tokio::test]
+async fn index_mismatch_rejected_over_socket() {
+    let daemon = TestDaemon::start(3, 5, 60).await;
+    let shares = make_shares(b"mismatch-test", 3, 5);
+
+    let actual_index = shares[0].0;
+    let wrong_index = actual_index.wrapping_add(1);
+
+    let mut conn = UnixStream::connect(&daemon.socket_path).await.unwrap();
+    let resp = submit_share(&mut conn, wrong_index, &shares[0].1, None).await;
+    match resp {
+        DaemonMessage::ShareRejected { reason } => {
+            assert!(reason.contains("mismatch"), "reason: {}", reason);
+        }
+        other => panic!(
+            "expected ShareRejected, got {:?}",
+            serde_json::to_string(&other).unwrap()
+        ),
+    }
+}

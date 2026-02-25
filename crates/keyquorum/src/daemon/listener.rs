@@ -14,12 +14,31 @@ pub async fn run_listeners(
     config: &DaemonConfig,
     session_tx: mpsc::Sender<SessionCommand>,
 ) -> anyhow::Result<()> {
-    // Clean up stale socket file if it exists
+    // Clean up stale socket file if it exists — but only if it's actually a socket
     let socket_path = &config.socket_path;
     if socket_path.exists() {
-        std::fs::remove_file(socket_path).map_err(|e| {
-            anyhow::anyhow!("failed to remove stale socket {}: {}", socket_path.display(), e)
+        use std::os::unix::fs::FileTypeExt;
+        let metadata = std::fs::symlink_metadata(socket_path).map_err(|e| {
+            anyhow::anyhow!(
+                "failed to stat existing path {}: {}",
+                socket_path.display(),
+                e
+            )
         })?;
+        if metadata.file_type().is_socket() {
+            std::fs::remove_file(socket_path).map_err(|e| {
+                anyhow::anyhow!(
+                    "failed to remove stale socket {}: {}",
+                    socket_path.display(),
+                    e
+                )
+            })?;
+        } else {
+            return Err(anyhow::anyhow!(
+                "socket path {} already exists and is not a socket (refusing to delete)",
+                socket_path.display()
+            ));
+        }
     }
 
     // Ensure parent directory exists

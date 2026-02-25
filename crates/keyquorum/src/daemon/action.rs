@@ -34,7 +34,12 @@ async fn luks_unlock(device: &str, name: &str, secret: &[u8]) -> ActionResult {
     };
 
     if let Some(mut stdin) = child.stdin.take() {
-        let _ = stdin.write_all(secret).await;
+        if let Err(e) = stdin.write_all(secret).await {
+            let _ = child.kill().await;
+            return ActionResult::Failure {
+                message: format!("Failed to write secret to cryptsetup stdin: {}", e),
+            };
+        }
         // drop stdin to close the pipe, signaling EOF
     }
 
@@ -89,7 +94,12 @@ async fn run_command(program: &str, args: &[String], secret: &[u8]) -> ActionRes
     };
 
     if let Some(mut stdin) = child.stdin.take() {
-        let _ = stdin.write_all(secret).await;
+        if let Err(e) = stdin.write_all(secret).await {
+            let _ = child.kill().await;
+            return ActionResult::Failure {
+                message: format!("Failed to write secret to {} stdin: {}", program, e),
+            };
+        }
     }
 
     match child.wait_with_output().await {

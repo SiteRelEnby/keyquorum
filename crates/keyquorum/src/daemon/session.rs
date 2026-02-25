@@ -84,10 +84,13 @@ impl Session {
             };
         }
 
-        // Check for duplicate index
-        if self.received_indices.contains(&share.index) {
+        // Enforce total_shares cap
+        if self.shares.len() as u8 >= self.config.total_shares {
             return DaemonMessage::ShareRejected {
-                reason: format!("Share with index {} already submitted", share.index),
+                reason: format!(
+                    "Already received maximum number of shares ({})",
+                    self.config.total_shares
+                ),
             };
         }
 
@@ -109,6 +112,25 @@ impl Session {
             };
         }
 
+        // Derive the actual share index from the decoded data (first byte)
+        // and verify it matches the client-supplied index
+        let actual_index = bytes[0];
+        if share.index != actual_index {
+            return DaemonMessage::ShareRejected {
+                reason: format!(
+                    "Share index mismatch: header says {} but share data contains index {}",
+                    share.index, actual_index
+                ),
+            };
+        }
+
+        // Check for duplicate index (using verified index)
+        if self.received_indices.contains(&actual_index) {
+            return DaemonMessage::ShareRejected {
+                reason: format!("Share with index {} already submitted", actual_index),
+            };
+        }
+
         // Lock share bytes in memory
         let _ = keyquorum_core::memory::mlock_slice(&bytes);
         let _ = keyquorum_core::memory::madvise_dontfork(&bytes);
@@ -116,15 +138,15 @@ impl Session {
         // Log participation if enabled (never log share data)
         if self.log_participation {
             info!(
-                index = share.index,
+                index = actual_index,
                 user = share.submitted_by.as_deref().unwrap_or("anonymous"),
                 "share submitted"
             );
         }
 
         // Store the share
-        self.received_indices.insert(share.index);
-        self.shares.push((share.index, SecureShareData { bytes }));
+        self.received_indices.insert(actual_index);
+        self.shares.push((actual_index, SecureShareData { bytes }));
 
         // Start timer on first share
         if self.state == SessionState::Idle {
@@ -506,5 +528,67 @@ mod tests {
         });
 
         assert!(matches!(response, DaemonMessage::ShareRejected { .. }));
+    }
+
+    #[test]
+    fn mismatched_index_rejected() {
+        let mut session = make_test_session(3, 5);
+        let shares = make_shares(b"test-mismatch", 3, 5);
+        let actual_index = share_index(&shares[0]);
+        let wrong_index = actual_index.wrapping_add(1);
+
+        let response = session.submit_share(ShareSubmission {
+            index: wrong_index,
+            data: shares[0].clone(),
+            submitted_by: None,
+        });
+
+        match response {
+            DaemonMessage::ShareRejected { reason } => {
+                assert!(reason.contains("mismatch"), "reason: {}", reason);
+            }
+            other => panic!(
+                "expected ShareRejected, got {:?}",
+                serde_json::to_string(&other).unwrap()
+            ),
+        }
+        assert_eq!(session.shares.len(), 0);
+    }
+
+    #[test]
+    fn total_shares_cap_enforced() {
+        // 2-of-2 session — should accept exactly 2 shares
+        let mut session = make_test_session(2, 2);
+        let shares = make_shares(b"test-cap", 2, 3);
+
+        session.submit_share(ShareSubmission {
+            index: share_index(&shares[0]),
+            data: shares[0].clone(),
+            submitted_by: None,
+        });
+        session.submit_share(ShareSubmission {
+            index: share_index(&shares[1]),
+            data: shares[1].clone(),
+            submitted_by: None,
+        });
+        assert_eq!(session.shares.len(), 2);
+
+        // Third share should be rejected
+        let response = session.submit_share(ShareSubmission {
+            index: share_index(&shares[2]),
+            data: shares[2].clone(),
+            submitted_by: None,
+        });
+
+        match response {
+            DaemonMessage::ShareRejected { reason } => {
+                assert!(reason.contains("maximum"), "reason: {}", reason);
+            }
+            other => panic!(
+                "expected ShareRejected, got {:?}",
+                serde_json::to_string(&other).unwrap()
+            ),
+        }
+        assert_eq!(session.shares.len(), 2);
     }
 }
