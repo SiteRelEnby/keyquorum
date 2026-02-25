@@ -11,19 +11,29 @@ use tracing_subscriber::EnvFilter;
 
 use keyquorum_core::config::Config;
 
-pub async fn run(config_path: PathBuf) -> anyhow::Result<()> {
+pub async fn run(config_path: PathBuf, lockdown: bool) -> anyhow::Result<()> {
     // Harden process before loading any secrets
     keyquorum_core::memory::harden_process()?;
 
     // Load config
-    let config = Config::from_file(&config_path).map_err(|e| {
+    let mut config = Config::from_file(&config_path).map_err(|e| {
         anyhow::anyhow!("failed to load config from {}: {}", config_path.display(), e)
+    })?;
+
+    // Apply and validate lockdown mode (from CLI flag or config file)
+    config.apply_lockdown(lockdown);
+    config.validate_lockdown().map_err(|e| {
+        anyhow::anyhow!("{}", e)
     })?;
 
     // Initialize logging
     let filter =
         EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(&config.logging.level));
     tracing_subscriber::fmt().with_env_filter(filter).init();
+
+    if config.daemon.lockdown {
+        info!("lockdown mode enabled");
+    }
 
     info!(
         threshold = config.session.threshold,

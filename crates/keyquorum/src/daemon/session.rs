@@ -8,7 +8,7 @@ use tokio::time::Instant;
 use tracing::{info, warn};
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
-use keyquorum_core::config::{ActionConfig, SessionConfig};
+use keyquorum_core::config::{ActionConfig, OnFailure, SessionConfig};
 use keyquorum_core::protocol::{ActionResult, DaemonMessage};
 use keyquorum_core::types::{SessionState, SessionStatus, ShareSubmission};
 
@@ -41,6 +41,7 @@ struct Session {
     received_indices: HashSet<u8>,
     started_at: Option<Instant>,
     log_participation: bool,
+    retry_attempts: u8,
 }
 
 impl Session {
@@ -53,6 +54,7 @@ impl Session {
             received_indices: HashSet::new(),
             started_at: None,
             log_participation,
+            retry_attempts: 0,
         }
     }
 
@@ -68,6 +70,7 @@ impl Session {
             shares_needed,
             timeout_secs: self.config.timeout_secs,
             elapsed_secs,
+            retry_attempts: self.retry_attempts,
         }
     }
 
@@ -172,69 +175,119 @@ impl Session {
         }
 
         self.state = SessionState::Reconstructing;
-        info!("threshold reached, reconstructing secret");
+        self.retry_attempts += 1;
+        info!(
+            attempt = self.retry_attempts,
+            shares = self.shares.len(),
+            "attempting reconstruction"
+        );
 
-        // Convert stored bytes back to sharks::Share
-        let shark_shares: Vec<sharks::Share> = self
-            .shares
-            .iter()
-            .filter_map(|(_, data)| sharks::Share::try_from(data.bytes.as_slice()).ok())
-            .collect();
-
-        if shark_shares.len() < self.config.threshold as usize {
-            self.state = SessionState::Failed;
-            let msg = DaemonMessage::QuorumReached {
-                action_result: ActionResult::Failure {
-                    message: "Failed to parse stored shares".to_string(),
-                },
-            };
-            self.reset();
-            return Some(msg);
-        }
-
-        // Reconstruct the secret
+        let k = self.config.threshold as usize;
+        let n = self.shares.len();
         let sharks_instance = Sharks(self.config.threshold);
-        let mut secret: Vec<u8> = match sharks_instance.recover(&shark_shares) {
-            Ok(s) => s,
-            Err(e) => {
-                self.state = SessionState::Failed;
-                let msg = DaemonMessage::QuorumReached {
-                    action_result: ActionResult::Failure {
-                        message: format!("Reconstruction failed: {}", e),
-                    },
-                };
-                self.reset();
-                return Some(msg);
+        let combos = k_combinations(n, k);
+
+        for combo in &combos {
+            // Parse shares for this combination
+            let subset: Vec<sharks::Share> = combo
+                .iter()
+                .filter_map(|&i| {
+                    sharks::Share::try_from(self.shares[i].1.bytes.as_slice()).ok()
+                })
+                .collect();
+
+            if subset.len() != k {
+                continue;
             }
-        };
 
-        // mlock the reconstructed secret
-        let _ = keyquorum_core::memory::mlock_slice(&secret);
-        let _ = keyquorum_core::memory::madvise_dontfork(&secret);
+            let mut secret = match sharks_instance.recover(&subset) {
+                Ok(s) => s,
+                Err(_) => continue,
+            };
 
-        // Execute the configured action
-        let result = action::execute(&self.action_config, &secret).await;
+            // mlock the reconstructed secret
+            let _ = keyquorum_core::memory::mlock_slice(&secret);
+            let _ = keyquorum_core::memory::madvise_dontfork(&secret);
 
-        // Immediately zeroize the secret
-        secret.zeroize();
+            // Execute the configured action
+            let result = action::execute(&self.action_config, &secret).await;
 
-        match &result {
-            ActionResult::Success { message } => {
-                self.state = SessionState::Completed;
-                info!(message = message.as_str(), "action completed successfully");
-            }
-            ActionResult::Failure { message } => {
-                self.state = SessionState::Failed;
-                warn!(message = message.as_str(), "action failed");
+            // Immediately zeroize the secret
+            secret.zeroize();
+
+            match &result {
+                ActionResult::Success { message } => {
+                    self.state = SessionState::Completed;
+                    info!(message = message.as_str(), "action completed successfully");
+                    self.reset();
+                    return Some(DaemonMessage::QuorumReached {
+                        action_result: result,
+                    });
+                }
+                ActionResult::Failure { message } => {
+                    if combos.len() > 1 {
+                        warn!(
+                            message = message.as_str(),
+                            combo = ?combo,
+                            "combination failed, trying next"
+                        );
+                    }
+                }
             }
         }
 
-        // Wipe all shares
-        self.reset();
+        // All combinations failed
+        Some(self.handle_reconstruction_failure())
+    }
 
-        Some(DaemonMessage::QuorumReached {
-            action_result: result,
-        })
+    fn handle_reconstruction_failure(&mut self) -> DaemonMessage {
+        match self.config.on_failure {
+            OnFailure::Wipe => {
+                self.state = SessionState::Failed;
+                warn!("all combinations failed, wiping shares (on_failure=wipe)");
+                self.reset();
+                DaemonMessage::QuorumReached {
+                    action_result: ActionResult::Failure {
+                        message: "Reconstruction failed with all share combinations".to_string(),
+                    },
+                }
+            }
+            OnFailure::Retry => {
+                if self.retry_attempts >= self.config.max_retries {
+                    self.state = SessionState::Failed;
+                    warn!(
+                        attempts = self.retry_attempts,
+                        max = self.config.max_retries,
+                        "max retries exhausted, wiping shares"
+                    );
+                    self.reset();
+                    DaemonMessage::QuorumReached {
+                        action_result: ActionResult::Failure {
+                            message: format!(
+                                "Reconstruction failed after {} attempts, all shares wiped",
+                                self.retry_attempts
+                            ),
+                        },
+                    }
+                } else {
+                    self.state = SessionState::Collecting;
+                    warn!(
+                        attempts = self.retry_attempts,
+                        max = self.config.max_retries,
+                        shares = self.shares.len(),
+                        "reconstruction failed, continuing to accept shares (on_failure=retry)"
+                    );
+                    DaemonMessage::QuorumReached {
+                        action_result: ActionResult::Failure {
+                            message: format!(
+                                "Reconstruction attempt {} failed, submitting more shares may help",
+                                self.retry_attempts
+                            ),
+                        },
+                    }
+                }
+            }
+        }
     }
 
     fn handle_timeout(&mut self) {
@@ -249,6 +302,33 @@ impl Session {
         self.received_indices.clear();
         self.started_at = None;
         self.state = SessionState::Idle;
+        self.retry_attempts = 0;
+    }
+}
+
+/// Generate all k-sized combinations of indices 0..n.
+fn k_combinations(n: usize, k: usize) -> Vec<Vec<usize>> {
+    let mut result = Vec::new();
+    let mut combo = vec![0usize; k];
+    generate_combos(&mut combo, 0, n, 0, k, &mut result);
+    result
+}
+
+fn generate_combos(
+    combo: &mut [usize],
+    start: usize,
+    n: usize,
+    depth: usize,
+    k: usize,
+    result: &mut Vec<Vec<usize>>,
+) {
+    if depth == k {
+        result.push(combo.to_vec());
+        return;
+    }
+    for i in start..=(n - k + depth) {
+        combo[depth] = i;
+        generate_combos(combo, i + 1, n, depth + 1, k, result);
     }
 }
 
@@ -340,6 +420,8 @@ mod tests {
                 threshold,
                 total_shares: total,
                 timeout_secs: 60,
+                on_failure: OnFailure::Wipe,
+                max_retries: 3,
             },
             ActionConfig::Stdout,
             false,
@@ -352,6 +434,7 @@ mod tests {
         assert_eq!(session.state, SessionState::Idle);
         assert!(session.shares.is_empty());
         assert!(session.started_at.is_none());
+        assert_eq!(session.retry_attempts, 0);
     }
 
     #[test]
@@ -472,6 +555,7 @@ mod tests {
         assert!(session.shares.is_empty());
         assert!(session.received_indices.is_empty());
         assert!(session.started_at.is_none());
+        assert_eq!(session.retry_attempts, 0);
     }
 
     #[test]
@@ -590,5 +674,157 @@ mod tests {
             ),
         }
         assert_eq!(session.shares.len(), 2);
+    }
+
+    #[test]
+    fn k_combinations_correctness() {
+        let combos = k_combinations(4, 2);
+        assert_eq!(combos.len(), 6); // C(4,2) = 6
+        assert_eq!(combos[0], vec![0, 1]);
+        assert_eq!(combos[5], vec![2, 3]);
+
+        let combos = k_combinations(3, 3);
+        assert_eq!(combos.len(), 1); // C(3,3) = 1
+        assert_eq!(combos[0], vec![0, 1, 2]);
+
+        let combos = k_combinations(5, 3);
+        assert_eq!(combos.len(), 10); // C(5,3) = 10
+    }
+
+    #[tokio::test]
+    async fn retry_mode_keeps_shares_after_failed_action() {
+        let mut session = Session::new(
+            SessionConfig {
+                threshold: 2,
+                total_shares: 3,
+                timeout_secs: 60,
+                on_failure: OnFailure::Retry,
+                max_retries: 3,
+            },
+            ActionConfig::Command {
+                program: "/bin/false".to_string(),
+                args: vec![],
+            },
+            false,
+        );
+
+        let shares = make_shares(b"retry-test", 2, 3);
+
+        session.submit_share(ShareSubmission {
+            index: share_index(&shares[0]),
+            data: shares[0].clone(),
+            submitted_by: None,
+        });
+        session.submit_share(ShareSubmission {
+            index: share_index(&shares[1]),
+            data: shares[1].clone(),
+            submitted_by: None,
+        });
+
+        // Attempt reconstruction — action will fail (/bin/false exits 1)
+        let result = session.try_reconstruct().await;
+        assert!(result.is_some());
+        match result.unwrap() {
+            DaemonMessage::QuorumReached { action_result } => {
+                assert!(matches!(action_result, ActionResult::Failure { .. }));
+            }
+            other => panic!(
+                "expected QuorumReached failure, got {:?}",
+                serde_json::to_string(&other).unwrap()
+            ),
+        }
+
+        // Session should be back to Collecting with shares preserved
+        assert_eq!(session.state, SessionState::Collecting);
+        assert_eq!(session.shares.len(), 2);
+        assert_eq!(session.retry_attempts, 1);
+    }
+
+    #[tokio::test]
+    async fn retry_mode_exhausts_max_retries() {
+        let mut session = Session::new(
+            SessionConfig {
+                threshold: 2,
+                total_shares: 4,
+                timeout_secs: 60,
+                on_failure: OnFailure::Retry,
+                max_retries: 2,
+            },
+            ActionConfig::Command {
+                program: "/bin/false".to_string(),
+                args: vec![],
+            },
+            false,
+        );
+
+        let shares = make_shares(b"exhaust-test", 2, 4);
+
+        session.submit_share(ShareSubmission {
+            index: share_index(&shares[0]),
+            data: shares[0].clone(),
+            submitted_by: None,
+        });
+        session.submit_share(ShareSubmission {
+            index: share_index(&shares[1]),
+            data: shares[1].clone(),
+            submitted_by: None,
+        });
+
+        // First attempt — should retry
+        session.try_reconstruct().await;
+        assert_eq!(session.state, SessionState::Collecting);
+        assert_eq!(session.retry_attempts, 1);
+
+        // Submit third share
+        session.submit_share(ShareSubmission {
+            index: share_index(&shares[2]),
+            data: shares[2].clone(),
+            submitted_by: None,
+        });
+
+        // Second attempt — max_retries=2, should wipe
+        session.try_reconstruct().await;
+        assert_eq!(session.state, SessionState::Idle);
+        assert!(session.shares.is_empty());
+        assert_eq!(session.retry_attempts, 0);
+    }
+
+    #[tokio::test]
+    async fn wipe_mode_clears_on_failure() {
+        let mut session = Session::new(
+            SessionConfig {
+                threshold: 2,
+                total_shares: 3,
+                timeout_secs: 60,
+                on_failure: OnFailure::Wipe,
+                max_retries: 3,
+            },
+            ActionConfig::Command {
+                program: "/bin/false".to_string(),
+                args: vec![],
+            },
+            false,
+        );
+
+        let shares = make_shares(b"wipe-test", 2, 3);
+
+        session.submit_share(ShareSubmission {
+            index: share_index(&shares[0]),
+            data: shares[0].clone(),
+            submitted_by: None,
+        });
+        session.submit_share(ShareSubmission {
+            index: share_index(&shares[1]),
+            data: shares[1].clone(),
+            submitted_by: None,
+        });
+
+        let result = session.try_reconstruct().await;
+        assert!(result.is_some());
+
+        // Wipe mode: shares should be gone immediately
+        assert_eq!(session.state, SessionState::Idle);
+        assert!(session.shares.is_empty());
+        assert_eq!(session.retry_attempts, 0);
     }
 }

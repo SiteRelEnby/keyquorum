@@ -25,6 +25,8 @@ pub struct SessionStatus {
     pub shares_needed: u8,
     pub timeout_secs: u64,
     pub elapsed_secs: u64,
+    #[serde(default)]
+    pub retry_attempts: u8,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -77,6 +79,7 @@ mod tests {
             shares_needed: 1,
             timeout_secs: 1800,
             elapsed_secs: 45,
+            retry_attempts: 0,
         };
         let json = serde_json::to_string(&status).unwrap();
         let deserialized: SessionStatus = serde_json::from_str(&json).unwrap();

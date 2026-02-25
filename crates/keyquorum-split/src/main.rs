@@ -21,6 +21,9 @@ struct Cli {
     /// Output directory for file-per-share mode
     #[arg(short, long)]
     dir: Option<PathBuf>,
+    /// Lockdown mode: rejects stdout output. May gain new restrictions between versions.
+    #[arg(long)]
+    lockdown: bool,
 }
 
 #[derive(Clone, ValueEnum)]
@@ -52,6 +55,10 @@ fn main() -> Result<()> {
 
     if matches!(cli.output, OutputMode::Files) && cli.dir.is_none() {
         bail!("--dir is required when using --output files");
+    }
+
+    if cli.lockdown && matches!(cli.output, OutputMode::Stdout) {
+        bail!("lockdown mode rejects --output stdout: shares must not appear in terminal output. Use --output files --dir <path>");
     }
 
     // Read secret from stdin

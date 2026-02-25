@@ -82,6 +82,7 @@ mod tests {
                 shares_needed: 1,
                 timeout_secs: 1800,
                 elapsed_secs: 45,
+                retry_attempts: 0,
             },
         };
         let json = serde_json::to_string(&msg).unwrap();

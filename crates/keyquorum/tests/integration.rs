@@ -6,7 +6,7 @@ use tokio::io::AsyncWriteExt;
 use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::mpsc;
 
-use keyquorum_core::config::{ActionConfig, SessionConfig};
+use keyquorum_core::config::{ActionConfig, OnFailure, SessionConfig};
 use keyquorum_core::protocol::{ActionResult, ClientMessage, DaemonMessage};
 use keyquorum_core::types::ShareSubmission;
 
@@ -52,6 +52,8 @@ impl TestDaemon {
             threshold,
             total_shares: total,
             timeout_secs,
+            on_failure: OnFailure::Wipe,
+            max_retries: 3,
         };
         let action_config = ActionConfig::Stdout;
 

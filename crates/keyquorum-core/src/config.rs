@@ -16,6 +16,8 @@ pub struct DaemonConfig {
     pub socket_path: PathBuf,
     pub tcp_port: Option<u16>,
     pub pid_file: Option<PathBuf>,
+    #[serde(default)]
+    pub lockdown: bool,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -24,6 +26,21 @@ pub struct SessionConfig {
     pub total_shares: u8,
     #[serde(default = "default_timeout")]
     pub timeout_secs: u64,
+    #[serde(default)]
+    pub on_failure: OnFailure,
+    #[serde(default = "default_max_retries")]
+    pub max_retries: u8,
+}
+
+/// What to do when reconstruction fails after reaching quorum.
+#[derive(Debug, Default, Deserialize, Clone, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum OnFailure {
+    /// Immediately wipe all shares and reset (default).
+    #[default]
+    Wipe,
+    /// Keep shares, return to Collecting, accept more and retry.
+    Retry,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -66,6 +83,10 @@ fn default_timeout() -> u64 {
     1800
 }
 
+fn default_max_retries() -> u8 {
+    3
+}
+
 fn default_log_level() -> String {
     "info".to_string()
 }
@@ -95,6 +116,34 @@ impl Config {
         }
         if self.session.timeout_secs == 0 {
             return Err("timeout_secs must be > 0".into());
+        }
+        if self.session.on_failure == OnFailure::Retry && self.session.max_retries == 0 {
+            return Err("max_retries must be > 0 when on_failure is retry".into());
+        }
+        Ok(())
+    }
+
+    /// Apply lockdown mode overrides. Call after loading config,
+    /// passing true if CLI --lockdown flag was set.
+    pub fn apply_lockdown(&mut self, cli_lockdown: bool) {
+        if !cli_lockdown && !self.daemon.lockdown {
+            return;
+        }
+        self.daemon.lockdown = true;
+        self.session.on_failure = OnFailure::Wipe;
+    }
+
+    /// Validate lockdown mode constraints. Returns Err if lockdown is enabled
+    /// but the config uses options that lockdown forbids.
+    pub fn validate_lockdown(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        if !self.daemon.lockdown {
+            return Ok(());
+        }
+        if matches!(self.action, ActionConfig::Stdout) {
+            return Err(
+                "lockdown mode rejects action type 'stdout': secrets must not be written to stdout"
+                    .into(),
+            );
         }
         Ok(())
     }
@@ -199,5 +248,144 @@ total_shares = 3
 type = "stdout"
 "#;
         assert!(Config::parse(toml).is_err());
+    }
+
+    #[test]
+    fn parse_retry_config() {
+        let toml = r#"
+[daemon]
+[session]
+threshold = 3
+total_shares = 5
+on_failure = "retry"
+max_retries = 5
+[action]
+type = "stdout"
+"#;
+        let config = Config::parse(toml).unwrap();
+        assert_eq!(config.session.on_failure, OnFailure::Retry);
+        assert_eq!(config.session.max_retries, 5);
+    }
+
+    #[test]
+    fn on_failure_defaults_to_wipe() {
+        let toml = r#"
+[daemon]
+[session]
+threshold = 2
+total_shares = 3
+[action]
+type = "stdout"
+"#;
+        let config = Config::parse(toml).unwrap();
+        assert_eq!(config.session.on_failure, OnFailure::Wipe);
+        assert_eq!(config.session.max_retries, 3);
+    }
+
+    #[test]
+    fn reject_retry_with_zero_max_retries() {
+        let toml = r#"
+[daemon]
+[session]
+threshold = 2
+total_shares = 3
+on_failure = "retry"
+max_retries = 0
+[action]
+type = "stdout"
+"#;
+        assert!(Config::parse(toml).is_err());
+    }
+
+    #[test]
+    fn lockdown_rejects_stdout_action() {
+        let toml = r#"
+[daemon]
+lockdown = true
+[session]
+threshold = 2
+total_shares = 3
+[action]
+type = "stdout"
+"#;
+        let mut config = Config::parse(toml).unwrap();
+        config.apply_lockdown(false);
+        assert!(config.validate_lockdown().is_err());
+    }
+
+    #[test]
+    fn lockdown_allows_luks_action() {
+        let toml = r#"
+[daemon]
+lockdown = true
+[session]
+threshold = 2
+total_shares = 3
+[action]
+type = "luks"
+device = "/dev/sda2"
+name = "cryptdata"
+"#;
+        let mut config = Config::parse(toml).unwrap();
+        config.apply_lockdown(false);
+        assert!(config.validate_lockdown().is_ok());
+    }
+
+    #[test]
+    fn lockdown_overrides_retry_to_wipe() {
+        let toml = r#"
+[daemon]
+lockdown = true
+[session]
+threshold = 2
+total_shares = 3
+on_failure = "retry"
+[action]
+type = "luks"
+device = "/dev/sda2"
+name = "cryptdata"
+"#;
+        let mut config = Config::parse(toml).unwrap();
+        assert_eq!(config.session.on_failure, OnFailure::Retry);
+        config.apply_lockdown(false);
+        assert_eq!(config.session.on_failure, OnFailure::Wipe);
+    }
+
+    #[test]
+    fn cli_lockdown_overrides_config() {
+        let toml = r#"
+[daemon]
+[session]
+threshold = 2
+total_shares = 3
+on_failure = "retry"
+[action]
+type = "luks"
+device = "/dev/sda2"
+name = "cryptdata"
+"#;
+        let mut config = Config::parse(toml).unwrap();
+        assert_eq!(config.session.on_failure, OnFailure::Retry);
+        assert!(!config.daemon.lockdown);
+        config.apply_lockdown(true); // CLI flag
+        assert_eq!(config.session.on_failure, OnFailure::Wipe);
+        assert!(config.daemon.lockdown);
+    }
+
+    #[test]
+    fn non_lockdown_does_not_override() {
+        let toml = r#"
+[daemon]
+[session]
+threshold = 2
+total_shares = 3
+on_failure = "retry"
+[action]
+type = "stdout"
+"#;
+        let mut config = Config::parse(toml).unwrap();
+        config.apply_lockdown(false);
+        assert_eq!(config.session.on_failure, OnFailure::Retry);
+        assert!(config.validate_lockdown().is_ok());
     }
 }

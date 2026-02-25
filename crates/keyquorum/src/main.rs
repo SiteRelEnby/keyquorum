@@ -20,6 +20,10 @@ enum Commands {
         /// Path to config file
         #[arg(short, long, default_value = "/etc/keyquorum/config.toml")]
         config: PathBuf,
+        /// Lockdown mode: maximum security posture. Rejects stdout action,
+        /// forces on_failure=wipe. May gain new restrictions between versions.
+        #[arg(long)]
+        lockdown: bool,
     },
     /// Submit a share to the running daemon
     Submit {
@@ -64,7 +68,7 @@ fn resolve_socket(socket: Option<String>, config: Option<PathBuf>) -> anyhow::Re
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
     match cli.command {
-        Commands::Daemon { config } => daemon::run(config).await,
+        Commands::Daemon { config, lockdown } => daemon::run(config, lockdown).await,
         Commands::Submit {
             share,
             user,

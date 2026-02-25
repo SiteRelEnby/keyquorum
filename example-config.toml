@@ -11,6 +11,11 @@ socket_path = "/run/keyquorum/keyquorum.sock"
 # Comment out to disable TCP entirely.
 # tcp_port = 35000
 
+# Lockdown mode: maximum security posture. Rejects stdout action,
+# forces on_failure=wipe. May gain new restrictions between versions.
+# Can also be set via --lockdown CLI flag.
+# lockdown = true
+
 [session]
 # Minimum shares needed to reconstruct the secret (K)
 threshold = 3
@@ -22,6 +27,13 @@ total_shares = 5
 # all collected shares are securely wiped and the session resets.
 # Default: 1800 (30 minutes)
 timeout_secs = 1800
+
+# What to do when reconstruction fails after reaching quorum.
+# "wipe" (default): immediately wipe all shares and reset.
+# "retry": keep shares, accept more, retry with combinatorial matching.
+#          Useful when a participant may have submitted a corrupted share.
+# on_failure = "retry"
+# max_retries = 3
 
 # Action to perform when quorum is reached.
 # Choose one of: luks, stdout, command
