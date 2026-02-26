@@ -112,6 +112,56 @@ This is a security-critical tool. The design assumes the host is trusted but par
 - **No participant authentication** — anyone with a valid share can submit (share-only trust model)
 - **Single session at a time** — one unlock operation at a time per daemon instance
 
+## CLI reference
+
+### keyquorum
+
+```
+Usage: keyquorum <COMMAND>
+
+Commands:
+  daemon  Start the collection daemon
+  submit  Submit a share to the running daemon
+  status  Query the current session status
+```
+
+**`keyquorum daemon`**
+```
+Options:
+  -c, --config <CONFIG>  Path to config file [default: /etc/keyquorum/config.toml]
+      --lockdown         Lockdown mode: maximum security posture
+```
+
+**`keyquorum submit`**
+```
+Options:
+  -s, --share <SHARE>    Share data (base64). If omitted, reads from stdin
+  -u, --user <USER>      Your identifier (optional, for participation logging)
+      --socket <SOCKET>  Socket path or tcp://host:port (overrides config)
+  -c, --config <CONFIG>  Path to config file (reads socket_path from it)
+```
+
+**`keyquorum status`**
+```
+Options:
+      --socket <SOCKET>  Socket path or tcp://host:port (overrides config)
+  -c, --config <CONFIG>  Path to config file (reads socket_path from it)
+```
+
+### keyquorum-split
+
+```
+Usage: keyquorum-split [OPTIONS] --shares <SHARES> --threshold <THRESHOLD>
+
+Options:
+  -n, --shares <SHARES>        Total number of shares to generate (2-255)
+  -k, --threshold <THRESHOLD>  Minimum shares needed to reconstruct (2-N)
+  -o, --output <OUTPUT>        Output mode: stdout (default) or files
+  -d, --dir <DIR>              Output directory for file-per-share mode
+      --lockdown               Lockdown mode: rejects stdout output
+      --no-checksum            Do not embed blake3 verification checksum
+```
+
 ## Protocol
 
 Newline-delimited JSON over Unix socket or TCP. See `example-config.toml` for configuration options.
