@@ -8,7 +8,7 @@ use tokio::time::Instant;
 use tracing::{info, warn};
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
-use keyquorum_core::config::{ActionConfig, OnFailure, SessionConfig};
+use keyquorum_core::config::{ActionConfig, OnFailure, SessionConfig, Verification};
 use keyquorum_core::protocol::{ActionResult, DaemonMessage};
 use keyquorum_core::types::{SessionState, SessionStatus, ShareSubmission};
 
@@ -205,9 +205,12 @@ impl Session {
         let k = self.config.threshold as usize;
         let n = self.shares.len();
         let sharks_instance = Sharks(self.config.threshold);
-        let combos = k_combinations(n, k);
+        let max_combos = self.config.max_combinations;
+        let mut combos_tried = 0usize;
 
-        for combo in &combos {
+        for combo in ComboIter::new(n, k).take(max_combos) {
+            combos_tried += 1;
+
             // Parse shares for this combination
             let subset: Vec<sharks::Share> = combo
                 .iter()
@@ -225,14 +228,41 @@ impl Session {
                 Err(_) => continue,
             };
 
+            // Verify the reconstructed secret before running the action
+            match self.config.verification {
+                Verification::EmbeddedBlake3 => {
+                    if secret.len() < 32 {
+                        secret.zeroize();
+                        continue;
+                    }
+                    let payload_len = secret.len() - 32;
+                    let expected = blake3::hash(&secret[..payload_len]);
+                    if expected.as_bytes() != &secret[payload_len..] {
+                        secret.zeroize();
+                        continue;
+                    }
+                    // Zeroize the checksum bytes before truncating so no
+                    // secret-derived material remains in the Vec's capacity
+                    secret[payload_len..].zeroize();
+                    secret.truncate(payload_len);
+                }
+                Verification::None => {
+                    // No verification — fall through to action execution
+                }
+            }
+
             // Apply memory protections to reconstructed secret
             let failures = keyquorum_core::memory::protect_secret(&secret);
             if !failures.is_empty() {
                 for (name, err) in &failures {
-                    warn!("memory protection {} failed for reconstructed secret: {}", name, err);
+                    warn!(
+                        "memory protection {} failed for reconstructed secret: {}",
+                        name, err
+                    );
                 }
                 if self.lockdown {
                     secret.zeroize();
+                    let _ = keyquorum_core::memory::munlock_slice(&secret);
                     self.state = SessionState::Failed;
                     self.reset();
                     return Some(DaemonMessage::QuorumReached {
@@ -246,8 +276,9 @@ impl Session {
             // Execute the configured action
             let result = action::execute(&self.action_config, &secret).await;
 
-            // Immediately zeroize the secret
+            // Immediately zeroize and munlock the secret
             secret.zeroize();
+            let _ = keyquorum_core::memory::munlock_slice(&secret);
 
             match &result {
                 ActionResult::Success { message } => {
@@ -259,7 +290,7 @@ impl Session {
                     });
                 }
                 ActionResult::Failure { message } => {
-                    if combos.len() > 1 {
+                    if combos_tried > 1 || n > k {
                         warn!(
                             message = message.as_str(),
                             combo = ?combo,
@@ -270,7 +301,14 @@ impl Session {
             }
         }
 
-        // All combinations failed
+        if combos_tried >= max_combos {
+            warn!(
+                max_combinations = max_combos,
+                "combination cap reached, stopping reconstruction"
+            );
+        }
+
+        // All combinations failed (or cap reached)
         Some(self.handle_reconstruction_failure())
     }
 
@@ -287,13 +325,23 @@ impl Session {
                 }
             }
             OnFailure::Retry => {
-                if self.retry_attempts >= self.config.max_retries {
+                let at_share_cap = self.shares.len() as u8 >= self.config.total_shares;
+                if self.retry_attempts >= self.config.max_retries || at_share_cap {
                     self.state = SessionState::Failed;
-                    warn!(
-                        attempts = self.retry_attempts,
-                        max = self.config.max_retries,
-                        "max retries exhausted, wiping shares"
-                    );
+                    if at_share_cap {
+                        warn!(
+                            attempts = self.retry_attempts,
+                            shares = self.shares.len(),
+                            total_shares = self.config.total_shares,
+                            "all shares received but reconstruction failed, wiping"
+                        );
+                    } else {
+                        warn!(
+                            attempts = self.retry_attempts,
+                            max = self.config.max_retries,
+                            "max retries exhausted, wiping shares"
+                        );
+                    }
                     self.reset();
                     DaemonMessage::QuorumReached {
                         action_result: ActionResult::Failure {
@@ -340,29 +388,64 @@ impl Session {
     }
 }
 
-/// Generate all k-sized combinations of indices 0..n.
-fn k_combinations(n: usize, k: usize) -> Vec<Vec<usize>> {
-    let mut result = Vec::new();
-    let mut combo = vec![0usize; k];
-    generate_combos(&mut combo, 0, n, 0, k, &mut result);
-    result
+/// Lazy iterator over all k-sized combinations of indices 0..n.
+/// Yields one combo at a time without pre-allocating all C(n,k) results.
+struct ComboIter {
+    indices: Vec<usize>,
+    n: usize,
+    k: usize,
+    finished: bool,
 }
 
-fn generate_combos(
-    combo: &mut [usize],
-    start: usize,
-    n: usize,
-    depth: usize,
-    k: usize,
-    result: &mut Vec<Vec<usize>>,
-) {
-    if depth == k {
-        result.push(combo.to_vec());
-        return;
+impl ComboIter {
+    fn new(n: usize, k: usize) -> Self {
+        if k == 0 || k > n {
+            return Self {
+                indices: Vec::new(),
+                n,
+                k,
+                finished: true,
+            };
+        }
+        let indices: Vec<usize> = (0..k).collect();
+        Self {
+            indices,
+            n,
+            k,
+            finished: false,
+        }
     }
-    for i in start..=(n - k + depth) {
-        combo[depth] = i;
-        generate_combos(combo, i + 1, n, depth + 1, k, result);
+}
+
+impl Iterator for ComboIter {
+    type Item = Vec<usize>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.finished {
+            return None;
+        }
+
+        let result = self.indices.clone();
+
+        // Advance to next combination
+        let mut i = self.k;
+        loop {
+            if i == 0 {
+                self.finished = true;
+                break;
+            }
+            i -= 1;
+            self.indices[i] += 1;
+            if self.indices[i] <= self.n - self.k + i {
+                // Fill remaining positions
+                for j in (i + 1)..self.k {
+                    self.indices[j] = self.indices[j - 1] + 1;
+                }
+                break;
+            }
+        }
+
+        Some(result)
     }
 }
 
@@ -457,6 +540,8 @@ mod tests {
                 timeout_secs: 60,
                 on_failure: OnFailure::Wipe,
                 max_retries: 3,
+                verification: Verification::None,
+                max_combinations: 100,
             },
             ActionConfig::Stdout,
             false,
@@ -713,18 +798,40 @@ mod tests {
     }
 
     #[test]
-    fn k_combinations_correctness() {
-        let combos = k_combinations(4, 2);
+    fn combo_iter_correctness() {
+        let combos: Vec<_> = ComboIter::new(4, 2).collect();
         assert_eq!(combos.len(), 6); // C(4,2) = 6
         assert_eq!(combos[0], vec![0, 1]);
         assert_eq!(combos[5], vec![2, 3]);
 
-        let combos = k_combinations(3, 3);
+        let combos: Vec<_> = ComboIter::new(3, 3).collect();
         assert_eq!(combos.len(), 1); // C(3,3) = 1
         assert_eq!(combos[0], vec![0, 1, 2]);
 
-        let combos = k_combinations(5, 3);
+        let combos: Vec<_> = ComboIter::new(5, 3).collect();
         assert_eq!(combos.len(), 10); // C(5,3) = 10
+    }
+
+    #[test]
+    fn combo_iter_edge_cases() {
+        // k > n: no combos
+        let combos: Vec<_> = ComboIter::new(2, 3).collect();
+        assert!(combos.is_empty());
+
+        // k == 0: no combos
+        let combos: Vec<_> = ComboIter::new(3, 0).collect();
+        assert!(combos.is_empty());
+
+        // C(1,1) = 1
+        let combos: Vec<_> = ComboIter::new(1, 1).collect();
+        assert_eq!(combos, vec![vec![0]]);
+    }
+
+    #[test]
+    fn combo_iter_respects_take_cap() {
+        // C(10,3) = 120, but we cap at 5
+        let combos: Vec<_> = ComboIter::new(10, 3).take(5).collect();
+        assert_eq!(combos.len(), 5);
     }
 
     #[tokio::test]
@@ -736,6 +843,8 @@ mod tests {
                 timeout_secs: 60,
                 on_failure: OnFailure::Retry,
                 max_retries: 3,
+                verification: Verification::None,
+                max_combinations: 100,
             },
             ActionConfig::Command {
                 program: "/bin/false".to_string(),
@@ -786,6 +895,8 @@ mod tests {
                 timeout_secs: 60,
                 on_failure: OnFailure::Retry,
                 max_retries: 2,
+                verification: Verification::None,
+                max_combinations: 100,
             },
             ActionConfig::Command {
                 program: "/bin/false".to_string(),
@@ -836,6 +947,8 @@ mod tests {
                 timeout_secs: 60,
                 on_failure: OnFailure::Wipe,
                 max_retries: 3,
+                verification: Verification::None,
+                max_combinations: 100,
             },
             ActionConfig::Command {
                 program: "/bin/false".to_string(),
@@ -865,5 +978,420 @@ mod tests {
         assert_eq!(session.state, SessionState::Idle);
         assert!(session.shares.is_empty());
         assert_eq!(session.retry_attempts, 0);
+    }
+
+    /// Helper: generate shares from a secret with an embedded blake3 checksum,
+    /// matching what keyquorum-split does by default.
+    fn make_shares_with_checksum(secret: &[u8], threshold: u8, n: u8) -> Vec<String> {
+        let mut payload = secret.to_vec();
+        let hash = blake3::hash(&payload);
+        payload.extend_from_slice(hash.as_bytes());
+        make_shares(&payload, threshold, n)
+    }
+
+    #[tokio::test]
+    async fn embedded_blake3_verifies_correct_secret() {
+        let mut session = Session::new(
+            SessionConfig {
+                threshold: 2,
+                total_shares: 3,
+                timeout_secs: 60,
+                on_failure: OnFailure::Wipe,
+                max_retries: 3,
+                verification: Verification::EmbeddedBlake3,
+                max_combinations: 100,
+            },
+            ActionConfig::Stdout,
+            false,
+            false,
+        );
+
+        let shares = make_shares_with_checksum(b"verified-secret", 2, 3);
+
+        session.submit_share(ShareSubmission {
+            index: share_index(&shares[0]),
+            data: shares[0].clone(),
+            submitted_by: None,
+        });
+        session.submit_share(ShareSubmission {
+            index: share_index(&shares[1]),
+            data: shares[1].clone(),
+            submitted_by: None,
+        });
+
+        let result = session.try_reconstruct().await;
+        assert!(result.is_some());
+        match result.unwrap() {
+            DaemonMessage::QuorumReached {
+                action_result: ActionResult::Success { message },
+            } => {
+                assert!(
+                    message.contains("stdout"),
+                    "expected stdout success, got: {}",
+                    message
+                );
+            }
+            other => panic!(
+                "expected success, got {:?}",
+                serde_json::to_string(&other).unwrap()
+            ),
+        }
+    }
+
+    #[tokio::test]
+    async fn embedded_blake3_rejects_wrong_combo() {
+        // 2-of-3 with checksum. Submit 2 valid + 1 corrupted share.
+        // Corrupt one share by flipping payload bytes (not the index).
+        // Combos with the corrupted share fail verification silently;
+        // the valid combo succeeds.
+        let mut session = Session::new(
+            SessionConfig {
+                threshold: 2,
+                total_shares: 3,
+                timeout_secs: 60,
+                on_failure: OnFailure::Wipe,
+                max_retries: 3,
+                verification: Verification::EmbeddedBlake3,
+                max_combinations: 100,
+            },
+            ActionConfig::Stdout,
+            false,
+            false,
+        );
+
+        let shares = make_shares_with_checksum(b"real-secret", 2, 3);
+        let engine = base64::engine::general_purpose::STANDARD;
+
+        // Submit first valid share
+        session.submit_share(ShareSubmission {
+            index: share_index(&shares[0]),
+            data: shares[0].clone(),
+            submitted_by: None,
+        });
+
+        // Corrupt the second share: decode, flip some payload bytes, re-encode
+        let mut bad_bytes = engine.decode(&shares[1]).unwrap();
+        // Flip bytes in payload (skip index byte 0)
+        for b in bad_bytes[1..].iter_mut().take(4) {
+            *b ^= 0xFF;
+        }
+        let bad_share = engine.encode(&bad_bytes);
+
+        session.submit_share(ShareSubmission {
+            index: bad_bytes[0], // keep original index
+            data: bad_share,
+            submitted_by: None,
+        });
+
+        // Submit third valid share
+        session.submit_share(ShareSubmission {
+            index: share_index(&shares[2]),
+            data: shares[2].clone(),
+            submitted_by: None,
+        });
+
+        // With 3 shares and threshold 2, we get C(3,2) = 3 combos.
+        // Combos involving the corrupted share fail verification.
+        // The combo of shares[0] + shares[2] (both valid) should pass.
+        let result = session.try_reconstruct().await;
+        assert!(result.is_some());
+        match result.unwrap() {
+            DaemonMessage::QuorumReached {
+                action_result: ActionResult::Success { message },
+            } => {
+                assert!(
+                    message.contains("stdout"),
+                    "expected stdout success, got: {}",
+                    message
+                );
+            }
+            other => panic!(
+                "expected success (valid combo should verify), got {:?}",
+                serde_json::to_string(&other).unwrap()
+            ),
+        }
+    }
+
+    #[tokio::test]
+    async fn embedded_blake3_all_combos_fail_verification() {
+        // All shares are from the same split, but we set verification to
+        // embedded-blake3 on shares that DON'T have a checksum embedded.
+        // Every combo should fail verification → reconstruction failure.
+        let mut session = Session::new(
+            SessionConfig {
+                threshold: 2,
+                total_shares: 3,
+                timeout_secs: 60,
+                on_failure: OnFailure::Wipe,
+                max_retries: 3,
+                verification: Verification::EmbeddedBlake3,
+                max_combinations: 100,
+            },
+            // Use Command /bin/echo so we can detect if action runs unexpectedly
+            ActionConfig::Command {
+                program: "/bin/echo".to_string(),
+                args: vec!["SHOULD-NOT-RUN".to_string()],
+            },
+            false,
+            false,
+        );
+
+        // Shares WITHOUT checksum (as if generated with --no-checksum)
+        let shares = make_shares(b"no-checksum-secret", 2, 3);
+
+        session.submit_share(ShareSubmission {
+            index: share_index(&shares[0]),
+            data: shares[0].clone(),
+            submitted_by: None,
+        });
+        session.submit_share(ShareSubmission {
+            index: share_index(&shares[1]),
+            data: shares[1].clone(),
+            submitted_by: None,
+        });
+
+        let result = session.try_reconstruct().await;
+        assert!(result.is_some());
+        match result.unwrap() {
+            DaemonMessage::QuorumReached {
+                action_result: ActionResult::Failure { message },
+            } => {
+                assert!(
+                    message.contains("failed"),
+                    "expected failure message, got: {}",
+                    message
+                );
+            }
+            other => panic!(
+                "expected failure (no valid checksum), got {:?}",
+                serde_json::to_string(&other).unwrap()
+            ),
+        }
+    }
+
+    #[tokio::test]
+    async fn verification_none_passes_checksum_to_action() {
+        // Shares generated with embedded checksum but daemon set to verification=none.
+        // The action receives payload+checksum (41 bytes for "my-secret" + 32 hash).
+        // With stdout action this "succeeds" but outputs the wrong thing.
+        // With a real action this would cause consistent failures.
+        let mut session = Session::new(
+            SessionConfig {
+                threshold: 2,
+                total_shares: 3,
+                timeout_secs: 60,
+                on_failure: OnFailure::Wipe,
+                max_retries: 3,
+                verification: Verification::None,
+                max_combinations: 100,
+            },
+            ActionConfig::Stdout,
+            false,
+            false,
+        );
+
+        let shares = make_shares_with_checksum(b"my-secret", 2, 3);
+
+        session.submit_share(ShareSubmission {
+            index: share_index(&shares[0]),
+            data: shares[0].clone(),
+            submitted_by: None,
+        });
+        session.submit_share(ShareSubmission {
+            index: share_index(&shares[1]),
+            data: shares[1].clone(),
+            submitted_by: None,
+        });
+
+        // Stdout action always succeeds, but the secret it outputs includes
+        // the checksum bytes — confirming the mismatch behavior.
+        let result = session.try_reconstruct().await;
+        assert!(result.is_some());
+        match result.unwrap() {
+            DaemonMessage::QuorumReached {
+                action_result: ActionResult::Success { .. },
+            } => {
+                // Expected: stdout "succeeds" but with wrong content.
+                // A real action (luks, command) would fail here.
+            }
+            other => panic!(
+                "expected success (stdout always succeeds), got {:?}",
+                serde_json::to_string(&other).unwrap()
+            ),
+        }
+    }
+
+    #[tokio::test]
+    async fn max_combinations_cap_triggers_failure() {
+        // Set max_combinations=1 with 3 shares and threshold 2 (C(3,2)=3 combos).
+        // Only the first combo is tried; if it fails, reconstruction stops.
+        // Use /bin/false so the action always fails.
+        let mut session = Session::new(
+            SessionConfig {
+                threshold: 2,
+                total_shares: 3,
+                timeout_secs: 60,
+                on_failure: OnFailure::Wipe,
+                max_retries: 3,
+                verification: Verification::None,
+                max_combinations: 1,
+            },
+            ActionConfig::Command {
+                program: "/bin/false".to_string(),
+                args: vec![],
+            },
+            false,
+            false,
+        );
+
+        let shares = make_shares(b"cap-test", 2, 3);
+
+        session.submit_share(ShareSubmission {
+            index: share_index(&shares[0]),
+            data: shares[0].clone(),
+            submitted_by: None,
+        });
+        session.submit_share(ShareSubmission {
+            index: share_index(&shares[1]),
+            data: shares[1].clone(),
+            submitted_by: None,
+        });
+        session.submit_share(ShareSubmission {
+            index: share_index(&shares[2]),
+            data: shares[2].clone(),
+            submitted_by: None,
+        });
+
+        let result = session.try_reconstruct().await;
+        assert!(result.is_some());
+        match result.unwrap() {
+            DaemonMessage::QuorumReached {
+                action_result: ActionResult::Failure { message },
+            } => {
+                assert!(
+                    message.contains("failed"),
+                    "expected failure, got: {}",
+                    message
+                );
+            }
+            other => panic!(
+                "expected failure (cap should limit combos), got {:?}",
+                serde_json::to_string(&other).unwrap()
+            ),
+        }
+        // Should have wiped (on_failure=wipe)
+        assert_eq!(session.state, SessionState::Idle);
+        assert!(session.shares.is_empty());
+    }
+
+    #[tokio::test]
+    async fn retry_at_total_shares_cap_forces_wipe() {
+        // 2-of-2 with retry mode: all shares received but action fails.
+        // Can't accept more shares (at total_shares cap), so retry should
+        // force wipe instead of dead-ending in Collecting.
+        let mut session = Session::new(
+            SessionConfig {
+                threshold: 2,
+                total_shares: 2,
+                timeout_secs: 60,
+                on_failure: OnFailure::Retry,
+                max_retries: 5, // plenty of retries left
+                verification: Verification::None,
+                max_combinations: 100,
+            },
+            ActionConfig::Command {
+                program: "/bin/false".to_string(),
+                args: vec![],
+            },
+            false,
+            false,
+        );
+
+        let shares = make_shares(b"cap-retry", 2, 2);
+
+        session.submit_share(ShareSubmission {
+            index: share_index(&shares[0]),
+            data: shares[0].clone(),
+            submitted_by: None,
+        });
+        session.submit_share(ShareSubmission {
+            index: share_index(&shares[1]),
+            data: shares[1].clone(),
+            submitted_by: None,
+        });
+
+        let result = session.try_reconstruct().await;
+        assert!(result.is_some());
+        match result.unwrap() {
+            DaemonMessage::QuorumReached {
+                action_result: ActionResult::Failure { message },
+            } => {
+                assert!(
+                    message.contains("wiped"),
+                    "expected wipe message, got: {}",
+                    message
+                );
+            }
+            other => panic!(
+                "expected failure+wipe, got {:?}",
+                serde_json::to_string(&other).unwrap()
+            ),
+        }
+        // Must have wiped, not returned to Collecting
+        assert_eq!(session.state, SessionState::Idle);
+        assert!(session.shares.is_empty());
+    }
+
+    #[test]
+    fn lockdown_rejects_share_on_protect_failure() {
+        // In lockdown mode, if protect_secret fails, the share should be rejected.
+        // We can't easily force mlock to fail in test, but we verify the lockdown
+        // flag is plumbed to the session and the code path handles both outcomes.
+        let mut session = Session::new(
+            SessionConfig {
+                threshold: 2,
+                total_shares: 3,
+                timeout_secs: 60,
+                on_failure: OnFailure::Wipe,
+                max_retries: 3,
+                verification: Verification::None,
+                max_combinations: 100,
+            },
+            ActionConfig::Stdout,
+            false,
+            true, // lockdown enabled
+        );
+
+        assert!(session.lockdown);
+
+        let shares = make_shares(b"lockdown-test", 2, 3);
+
+        // Submit should succeed if mlock works (running as root),
+        // or be rejected if mlock fails (lockdown hard-fail).
+        let result = session.submit_share(ShareSubmission {
+            index: share_index(&shares[0]),
+            data: shares[0].clone(),
+            submitted_by: None,
+        });
+
+        match result {
+            DaemonMessage::ShareAccepted { .. } => {
+                // mlock succeeded as root — share accepted, lockdown didn't trigger
+                assert_eq!(session.shares.len(), 1);
+            }
+            DaemonMessage::ShareRejected { reason } => {
+                // mlock failed — lockdown correctly rejected
+                assert!(
+                    reason.contains("lockdown"),
+                    "expected lockdown rejection, got: {}",
+                    reason
+                );
+                assert!(session.shares.is_empty());
+            }
+            other => panic!(
+                "unexpected response: {:?}",
+                serde_json::to_string(&other).unwrap()
+            ),
+        }
     }
 }

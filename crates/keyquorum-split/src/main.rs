@@ -24,6 +24,14 @@ struct Cli {
     /// Lockdown mode: rejects stdout output. May gain new restrictions between versions.
     #[arg(long)]
     lockdown: bool,
+    /// Do not embed a blake3 verification checksum in the secret before splitting.
+    ///
+    /// WARNING: without a checksum, retry mode (on_failure="retry") cannot verify
+    /// candidate secrets and will execute the configured action (cryptsetup, command,
+    /// etc.) with each incorrect key attempt. This may cause repeated failed
+    /// invocations of downstream tools.
+    #[arg(long)]
+    no_checksum: bool,
 }
 
 #[derive(Clone, ValueEnum)]
@@ -74,7 +82,23 @@ fn main() -> Result<()> {
         bail!("no secret provided on stdin");
     }
 
-    // Apply memory protections to the secret buffer
+    // Embed blake3 verification checksum (default behavior).
+    // Done before protect_secret so the final buffer (with checksum) is what gets mlocked.
+    if !cli.no_checksum {
+        // Reserve upfront to avoid reallocation after mlock
+        secret.reserve(32);
+        let hash = blake3::hash(&secret);
+        secret.extend_from_slice(hash.as_bytes());
+        eprintln!("Embedded blake3 verification checksum (32 bytes)");
+        eprintln!("Use verification = \"embedded-blake3\" in daemon config.");
+    } else {
+        eprintln!("WARNING: no checksum embedded. If on_failure=\"retry\" is used,");
+        eprintln!("the daemon will execute the configured action with each incorrect");
+        eprintln!("candidate secret, causing repeated failed invocations of downstream tools.");
+        eprintln!("Use verification = \"none\" in daemon config.");
+    }
+
+    // Apply memory protections to the final secret buffer (including checksum if appended)
     let failures = keyquorum_core::memory::protect_secret(&secret);
     if !failures.is_empty() {
         for (name, err) in &failures {

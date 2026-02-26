@@ -6,10 +6,10 @@ pub mod session;
 use std::path::PathBuf;
 
 use tokio::sync::mpsc;
-use tracing::info;
+use tracing::{info, warn};
 use tracing_subscriber::EnvFilter;
 
-use keyquorum_core::config::Config;
+use keyquorum_core::config::{Config, Verification};
 
 pub async fn run(config_path: PathBuf, lockdown: bool) -> anyhow::Result<()> {
     // Harden process before loading any secrets
@@ -33,6 +33,16 @@ pub async fn run(config_path: PathBuf, lockdown: bool) -> anyhow::Result<()> {
 
     if config.daemon.lockdown {
         info!("lockdown mode enabled");
+    }
+
+    if config.session.verification == Verification::None {
+        warn!(
+            "verification = \"none\": reconstructed secrets will not be verified before \
+             executing the action. If shares were generated with the default embedded checksum \
+             (keyquorum-split without --no-checksum), the checksum bytes will be passed to the \
+             action as part of the secret, causing consistent failures. Use \
+             verification = \"embedded-blake3\" or regenerate shares with --no-checksum."
+        );
     }
 
     info!(

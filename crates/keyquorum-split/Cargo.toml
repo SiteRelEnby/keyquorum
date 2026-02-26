@@ -13,3 +13,4 @@ anyhow = "1"
 zeroize = { version = "1", features = ["zeroize_derive"] }
 base64 = "0.22"
 sharks = "0.5"
+blake3 = "1"
