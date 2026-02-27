@@ -11,7 +11,11 @@ use tracing_subscriber::EnvFilter;
 
 use keyquorum_core::config::{Config, Verification};
 
-pub async fn run(config_path: PathBuf, lockdown: bool) -> anyhow::Result<()> {
+pub async fn run(
+    config_path: PathBuf,
+    lockdown: bool,
+    no_strict_hardening: bool,
+) -> anyhow::Result<()> {
     // Harden process before loading any secrets
     keyquorum_core::memory::harden_process()?;
 
@@ -20,7 +24,13 @@ pub async fn run(config_path: PathBuf, lockdown: bool) -> anyhow::Result<()> {
         anyhow::anyhow!("failed to load config from {}: {}", config_path.display(), e)
     })?;
 
+    // Apply CLI overrides
+    if no_strict_hardening {
+        config.daemon.strict_hardening = false;
+    }
+
     // Apply and validate lockdown mode (from CLI flag or config file)
+    // Note: lockdown re-enables strict_hardening even if --no-strict-hardening was passed
     config.apply_lockdown(lockdown);
     config.validate_lockdown().map_err(|e| {
         anyhow::anyhow!("{}", e)
@@ -33,6 +43,14 @@ pub async fn run(config_path: PathBuf, lockdown: bool) -> anyhow::Result<()> {
 
     if config.daemon.lockdown {
         info!("lockdown mode enabled");
+    }
+
+    if !config.daemon.strict_hardening {
+        warn!(
+            "strict_hardening disabled: the daemon will continue even if memory protections \
+             (mlock, madvise) fail on secret buffers. Secret material may be swappable, \
+             dumpable, or leaked to child processes. Not recommended for production."
+        );
     }
 
     if config.session.verification == Verification::None {
@@ -60,6 +78,7 @@ pub async fn run(config_path: PathBuf, lockdown: bool) -> anyhow::Result<()> {
     let action_config = config.action.clone();
     let log_participation = config.logging.log_participation;
     let session_lockdown = config.daemon.lockdown;
+    let session_strict_hardening = config.daemon.strict_hardening;
     tokio::spawn(async move {
         session::run_session(
             session_rx,
@@ -67,6 +86,7 @@ pub async fn run(config_path: PathBuf, lockdown: bool) -> anyhow::Result<()> {
             action_config,
             log_participation,
             session_lockdown,
+            session_strict_hardening,
         )
         .await;
     });

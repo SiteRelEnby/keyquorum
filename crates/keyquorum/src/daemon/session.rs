@@ -1,7 +1,6 @@
 use std::collections::HashSet;
 use std::time::Duration;
 
-use base64::Engine;
 use sharks::Sharks;
 use tokio::sync::{mpsc, oneshot};
 use tokio::time::Instant;
@@ -42,7 +41,7 @@ struct Session {
     started_at: Option<Instant>,
     log_participation: bool,
     retry_attempts: u8,
-    lockdown: bool,
+    strict_hardening: bool,
 }
 
 impl Session {
@@ -51,7 +50,9 @@ impl Session {
         action_config: ActionConfig,
         log_participation: bool,
         lockdown: bool,
+        strict_hardening: bool,
     ) -> Self {
+        let _ = lockdown; // validated at config level, not needed at session level
         Self {
             config,
             action_config,
@@ -61,7 +62,7 @@ impl Session {
             started_at: None,
             log_participation,
             retry_attempts: 0,
-            lockdown,
+            strict_hardening,
         }
     }
 
@@ -104,30 +105,51 @@ impl Session {
             };
         }
 
-        // Normalize whitespace from share data (copy-paste often introduces spaces/newlines)
-        let cleaned: String = share.data.chars().filter(|c| !c.is_whitespace()).collect();
-
-        // Decode base64 to raw bytes
-        let engine = base64::engine::general_purpose::STANDARD;
-        let bytes = match engine.decode(&cleaned) {
-            Ok(b) => b,
+        // Parse share format (auto-detects: PEM envelope, bare V1, legacy base64/base32)
+        let parsed = match keyquorum_core::share_format::parse_share(&share.data) {
+            Ok(p) => p,
             Err(e) => {
                 return DaemonMessage::ShareRejected {
-                    reason: format!("Invalid base64: {}", e),
+                    reason: format!("invalid share format: {}", e),
                 };
             }
         };
 
+        // Validate metadata if require_metadata is enabled
+        if self.config.require_metadata {
+            if !parsed.had_envelope || parsed.metadata.is_none() {
+                return DaemonMessage::ShareRejected {
+                    reason: "share rejected: PEM envelope with metadata required \
+                             (require_metadata = true)"
+                        .to_string(),
+                };
+            }
+            if let Some(ref meta) = parsed.metadata {
+                if let Err(e) = keyquorum_core::share_format::validate_metadata(
+                    meta,
+                    self.config.threshold,
+                    self.config.total_shares,
+                ) {
+                    return DaemonMessage::ShareRejected {
+                        reason: format!("metadata validation failed: {}", e),
+                    };
+                }
+            }
+        }
+
+        // Extract sharks data and index from parsed result
+        let actual_index = parsed.index;
+        let bytes = parsed.sharks_data.clone();
+        drop(parsed); // zeroize the ParsedShare copy
+
         // Validate it's a valid sharks share
         if sharks::Share::try_from(bytes.as_slice()).is_err() {
             return DaemonMessage::ShareRejected {
-                reason: "Invalid share data".to_string(),
+                reason: "invalid share data".to_string(),
             };
         }
 
-        // Derive the actual share index from the decoded data (first byte)
-        // and verify it matches the client-supplied index
-        let actual_index = bytes[0];
+        // Verify index matches client-supplied value
         if share.index != actual_index {
             return DaemonMessage::ShareRejected {
                 reason: format!(
@@ -150,9 +172,9 @@ impl Session {
             for (name, err) in &failures {
                 warn!("memory protection {} failed for share data: {}", name, err);
             }
-            if self.lockdown {
+            if self.strict_hardening {
                 return DaemonMessage::ShareRejected {
-                    reason: "lockdown mode: failed to apply memory protections to share data"
+                    reason: "strict_hardening: failed to apply memory protections to share data"
                         .to_string(),
                 };
             }
@@ -260,14 +282,14 @@ impl Session {
                         name, err
                     );
                 }
-                if self.lockdown {
+                if self.strict_hardening {
                     secret.zeroize();
                     let _ = keyquorum_core::memory::munlock_slice(&secret);
                     self.state = SessionState::Failed;
                     self.reset();
                     return Some(DaemonMessage::QuorumReached {
                         action_result: ActionResult::Failure {
-                            message: "lockdown mode: failed to apply memory protections to reconstructed secret".to_string(),
+                            message: "strict_hardening: failed to apply memory protections to reconstructed secret".to_string(),
                         },
                     });
                 }
@@ -284,6 +306,24 @@ impl Session {
                 ActionResult::Success { message } => {
                     self.state = SessionState::Completed;
                     info!(message = message.as_str(), "action completed successfully");
+
+                    // Log which shares were used vs excluded
+                    let used_indices: Vec<u8> =
+                        combo.iter().map(|&i| self.shares[i].0).collect();
+                    let excluded_indices: Vec<u8> = self
+                        .shares
+                        .iter()
+                        .map(|(idx, _)| *idx)
+                        .filter(|idx| !used_indices.contains(idx))
+                        .collect();
+                    if !excluded_indices.is_empty() {
+                        warn!(
+                            used = ?used_indices,
+                            excluded = ?excluded_indices,
+                            "reconstruction succeeded with some shares excluded"
+                        );
+                    }
+
                     self.reset();
                     return Some(DaemonMessage::QuorumReached {
                         action_result: result,
@@ -456,8 +496,9 @@ pub async fn run_session(
     action_config: ActionConfig,
     log_participation: bool,
     lockdown: bool,
+    strict_hardening: bool,
 ) {
-    let mut session = Session::new(config, action_config, log_participation, lockdown);
+    let mut session = Session::new(config, action_config, log_participation, lockdown, strict_hardening);
 
     loop {
         let timeout_future = async {
@@ -542,8 +583,10 @@ mod tests {
                 max_retries: 3,
                 verification: Verification::None,
                 max_combinations: 100,
+                require_metadata: false,
             },
             ActionConfig::Stdout,
+            false,
             false,
             false,
         )
@@ -845,11 +888,13 @@ mod tests {
                 max_retries: 3,
                 verification: Verification::None,
                 max_combinations: 100,
+                require_metadata: false,
             },
             ActionConfig::Command {
                 program: "/bin/false".to_string(),
                 args: vec![],
             },
+            false,
             false,
             false,
         );
@@ -897,11 +942,13 @@ mod tests {
                 max_retries: 2,
                 verification: Verification::None,
                 max_combinations: 100,
+                require_metadata: false,
             },
             ActionConfig::Command {
                 program: "/bin/false".to_string(),
                 args: vec![],
             },
+            false,
             false,
             false,
         );
@@ -949,11 +996,13 @@ mod tests {
                 max_retries: 3,
                 verification: Verification::None,
                 max_combinations: 100,
+                require_metadata: false,
             },
             ActionConfig::Command {
                 program: "/bin/false".to_string(),
                 args: vec![],
             },
+            false,
             false,
             false,
         );
@@ -1000,8 +1049,10 @@ mod tests {
                 max_retries: 3,
                 verification: Verification::EmbeddedBlake3,
                 max_combinations: 100,
+                require_metadata: false,
             },
             ActionConfig::Stdout,
+            false,
             false,
             false,
         );
@@ -1053,8 +1104,10 @@ mod tests {
                 max_retries: 3,
                 verification: Verification::EmbeddedBlake3,
                 max_combinations: 100,
+                require_metadata: false,
             },
             ActionConfig::Stdout,
+            false,
             false,
             false,
         );
@@ -1126,12 +1179,14 @@ mod tests {
                 max_retries: 3,
                 verification: Verification::EmbeddedBlake3,
                 max_combinations: 100,
+                require_metadata: false,
             },
             // Use Command /bin/echo so we can detect if action runs unexpectedly
             ActionConfig::Command {
                 program: "/bin/echo".to_string(),
                 args: vec!["SHOULD-NOT-RUN".to_string()],
             },
+            false,
             false,
             false,
         );
@@ -1184,8 +1239,10 @@ mod tests {
                 max_retries: 3,
                 verification: Verification::None,
                 max_combinations: 100,
+                require_metadata: false,
             },
             ActionConfig::Stdout,
+            false,
             false,
             false,
         );
@@ -1235,11 +1292,13 @@ mod tests {
                 max_retries: 3,
                 verification: Verification::None,
                 max_combinations: 1,
+                require_metadata: false,
             },
             ActionConfig::Command {
                 program: "/bin/false".to_string(),
                 args: vec![],
             },
+            false,
             false,
             false,
         );
@@ -1298,11 +1357,13 @@ mod tests {
                 max_retries: 5, // plenty of retries left
                 verification: Verification::None,
                 max_combinations: 100,
+                require_metadata: false,
             },
             ActionConfig::Command {
                 program: "/bin/false".to_string(),
                 args: vec![],
             },
+            false,
             false,
             false,
         );
@@ -1343,9 +1404,9 @@ mod tests {
     }
 
     #[test]
-    fn lockdown_rejects_share_on_protect_failure() {
-        // In lockdown mode, if protect_secret fails, the share should be rejected.
-        // We can't easily force mlock to fail in test, but we verify the lockdown
+    fn strict_hardening_rejects_share_on_protect_failure() {
+        // With strict_hardening, if protect_secret fails, the share should be rejected.
+        // We can't easily force mlock to fail in test, but we verify the strict_hardening
         // flag is plumbed to the session and the code path handles both outcomes.
         let mut session = Session::new(
             SessionConfig {
@@ -1356,13 +1417,15 @@ mod tests {
                 max_retries: 3,
                 verification: Verification::None,
                 max_combinations: 100,
+                require_metadata: false,
             },
             ActionConfig::Stdout,
             false,
-            true, // lockdown enabled
+            true,  // lockdown enabled
+            true,  // strict_hardening (implied by lockdown)
         );
 
-        assert!(session.lockdown);
+        assert!(session.strict_hardening);
 
         let shares = make_shares(b"lockdown-test", 2, 3);
 
@@ -1376,14 +1439,14 @@ mod tests {
 
         match result {
             DaemonMessage::ShareAccepted { .. } => {
-                // mlock succeeded as root — share accepted, lockdown didn't trigger
+                // mlock succeeded as root — share accepted, strict_hardening didn't trigger
                 assert_eq!(session.shares.len(), 1);
             }
             DaemonMessage::ShareRejected { reason } => {
-                // mlock failed — lockdown correctly rejected
+                // mlock failed — strict_hardening correctly rejected
                 assert!(
-                    reason.contains("lockdown"),
-                    "expected lockdown rejection, got: {}",
+                    reason.contains("strict_hardening"),
+                    "expected strict_hardening rejection, got: {}",
                     reason
                 );
                 assert!(session.shares.is_empty());
@@ -1393,5 +1456,270 @@ mod tests {
                 serde_json::to_string(&other).unwrap()
             ),
         }
+    }
+
+    /// Helper: format raw sharks share bytes as a v1 share with given options.
+    fn make_v1_share(
+        sharks_data: &[u8],
+        include_crc32: bool,
+        include_envelope: bool,
+        include_metadata: bool,
+        share_number: u8,
+        total_shares: u8,
+        threshold: u8,
+    ) -> String {
+        use keyquorum_core::share_format::{ShareEncoding, ShareFormatOptions};
+        let opts = ShareFormatOptions {
+            encoding: ShareEncoding::Base64,
+            include_crc32,
+            include_envelope,
+            include_metadata,
+            share_number,
+            total_shares,
+            threshold,
+        };
+        keyquorum_core::share_format::format_share(sharks_data, &opts)
+    }
+
+    /// Helper: generate shares and format them as v1 shares with envelopes.
+    fn make_v1_shares(
+        secret: &[u8],
+        threshold: u8,
+        total: u8,
+    ) -> Vec<(u8, String)> {
+        let sharks = Sharks(threshold);
+        let dealer = sharks.dealer(secret);
+        let shares: Vec<sharks::Share> = dealer.take(total as usize).collect();
+        shares
+            .iter()
+            .enumerate()
+            .map(|(i, s)| {
+                let bytes: Vec<u8> = Vec::from(s);
+                let index = bytes[0];
+                let formatted = make_v1_share(
+                    &bytes, true, true, true,
+                    (i + 1) as u8, total, threshold,
+                );
+                (index, formatted)
+            })
+            .collect()
+    }
+
+    #[test]
+    fn v1_share_accepted() {
+        let mut session = make_test_session(2, 3);
+        let shares = make_v1_shares(b"v1-test", 2, 3);
+
+        let response = session.submit_share(ShareSubmission {
+            index: shares[0].0,
+            data: shares[0].1.clone(),
+            submitted_by: None,
+        });
+
+        assert!(
+            matches!(response, DaemonMessage::ShareAccepted { .. }),
+            "expected ShareAccepted, got {:?}",
+            serde_json::to_string(&response).unwrap()
+        );
+        assert_eq!(session.shares.len(), 1);
+    }
+
+    #[test]
+    fn legacy_share_still_accepted() {
+        // Legacy = raw base64 sharks data, no KQ prefix
+        let mut session = make_test_session(2, 3);
+        let shares = make_shares(b"legacy-test", 2, 3);
+
+        let response = session.submit_share(ShareSubmission {
+            index: share_index(&shares[0]),
+            data: shares[0].clone(),
+            submitted_by: None,
+        });
+
+        assert!(matches!(response, DaemonMessage::ShareAccepted { .. }));
+        assert_eq!(session.shares.len(), 1);
+    }
+
+    #[test]
+    fn require_metadata_rejects_bare() {
+        let mut session = Session::new(
+            SessionConfig {
+                threshold: 2,
+                total_shares: 3,
+                timeout_secs: 60,
+                on_failure: OnFailure::Wipe,
+                max_retries: 3,
+                verification: Verification::None,
+                max_combinations: 100,
+                require_metadata: true,
+            },
+            ActionConfig::Stdout,
+            false,
+            false,
+            false,
+        );
+
+        // Submit a bare v1 share (no envelope)
+        let shares_raw = make_shares(b"metadata-test", 2, 3);
+        let response = session.submit_share(ShareSubmission {
+            index: share_index(&shares_raw[0]),
+            data: shares_raw[0].clone(),
+            submitted_by: None,
+        });
+
+        match response {
+            DaemonMessage::ShareRejected { reason } => {
+                assert!(
+                    reason.contains("metadata") || reason.contains("envelope"),
+                    "expected metadata rejection, got: {}",
+                    reason
+                );
+            }
+            other => panic!(
+                "expected ShareRejected, got {:?}",
+                serde_json::to_string(&other).unwrap()
+            ),
+        }
+    }
+
+    #[test]
+    fn require_metadata_accepts_envelope() {
+        let mut session = Session::new(
+            SessionConfig {
+                threshold: 2,
+                total_shares: 3,
+                timeout_secs: 60,
+                on_failure: OnFailure::Wipe,
+                max_retries: 3,
+                verification: Verification::None,
+                max_combinations: 100,
+                require_metadata: true,
+            },
+            ActionConfig::Stdout,
+            false,
+            false,
+            false,
+        );
+
+        let shares = make_v1_shares(b"envelope-test", 2, 3);
+        let response = session.submit_share(ShareSubmission {
+            index: shares[0].0,
+            data: shares[0].1.clone(),
+            submitted_by: None,
+        });
+
+        assert!(
+            matches!(response, DaemonMessage::ShareAccepted { .. }),
+            "expected ShareAccepted, got {:?}",
+            serde_json::to_string(&response).unwrap()
+        );
+    }
+
+    #[test]
+    fn require_metadata_rejects_wrong_threshold() {
+        let mut session = Session::new(
+            SessionConfig {
+                threshold: 3,
+                total_shares: 5,
+                timeout_secs: 60,
+                on_failure: OnFailure::Wipe,
+                max_retries: 3,
+                verification: Verification::None,
+                max_combinations: 100,
+                require_metadata: true,
+            },
+            ActionConfig::Stdout,
+            false,
+            false,
+            false,
+        );
+
+        // Generate shares with threshold=2 but daemon expects threshold=3
+        let shares = make_v1_shares(b"mismatch-test", 2, 5);
+        let response = session.submit_share(ShareSubmission {
+            index: shares[0].0,
+            data: shares[0].1.clone(),
+            submitted_by: None,
+        });
+
+        match response {
+            DaemonMessage::ShareRejected { reason } => {
+                assert!(
+                    reason.contains("mismatch") || reason.contains("metadata"),
+                    "expected metadata mismatch, got: {}",
+                    reason
+                );
+            }
+            other => panic!(
+                "expected ShareRejected, got {:?}",
+                serde_json::to_string(&other).unwrap()
+            ),
+        }
+    }
+
+    #[test]
+    fn crc32_corrupt_share_rejected() {
+        let mut session = make_test_session(2, 3);
+        let shares = make_v1_shares(b"crc-test", 2, 3);
+
+        // Corrupt the payload in the v1 share: find the base64 payload
+        // and flip a character
+        let mut corrupted = shares[0].1.clone();
+        // Find the last line (payload) and corrupt it
+        if let Some(pos) = corrupted.rfind('=') {
+            // Replace = with A to corrupt base64 payload
+            corrupted.replace_range(pos..pos + 1, "Z");
+        } else {
+            // Just corrupt a character near the end
+            let len = corrupted.len();
+            corrupted.replace_range(len - 3..len - 2, "Z");
+        }
+
+        let response = session.submit_share(ShareSubmission {
+            index: shares[0].0,
+            data: corrupted,
+            submitted_by: None,
+        });
+
+        assert!(
+            matches!(response, DaemonMessage::ShareRejected { .. }),
+            "expected rejection for corrupted CRC, got {:?}",
+            serde_json::to_string(&response).unwrap()
+        );
+    }
+
+    #[test]
+    fn base32_share_accepted() {
+        use keyquorum_core::share_format::{ShareEncoding, ShareFormatOptions};
+
+        let mut session = make_test_session(2, 3);
+        let sharks_instance = Sharks(2);
+        let dealer = sharks_instance.dealer(b"base32-test");
+        let shares: Vec<sharks::Share> = dealer.take(3).collect();
+
+        let bytes: Vec<u8> = Vec::from(&shares[0]);
+        let index = bytes[0];
+        let opts = ShareFormatOptions {
+            encoding: ShareEncoding::Base32,
+            include_crc32: true,
+            include_envelope: false,
+            include_metadata: false,
+            share_number: 1,
+            total_shares: 3,
+            threshold: 2,
+        };
+        let formatted = keyquorum_core::share_format::format_share(&bytes, &opts);
+
+        let response = session.submit_share(ShareSubmission {
+            index,
+            data: formatted,
+            submitted_by: None,
+        });
+
+        assert!(
+            matches!(response, DaemonMessage::ShareAccepted { .. }),
+            "expected ShareAccepted for base32 share, got {:?}",
+            serde_json::to_string(&response).unwrap()
+        );
     }
 }

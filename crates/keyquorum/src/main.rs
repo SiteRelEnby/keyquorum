@@ -24,10 +24,14 @@ enum Commands {
         /// forces on_failure=wipe. May gain new restrictions between versions.
         #[arg(long)]
         lockdown: bool,
+        /// Disable strict hardening: allow the daemon to continue if memory
+        /// protections (mlock, madvise) fail. Not recommended for production.
+        #[arg(long)]
+        no_strict_hardening: bool,
     },
     /// Submit a share to the running daemon
     Submit {
-        /// Share data (base64). If omitted, reads from stdin.
+        /// Share data (PEM envelope, bare V1, or raw base64/base32). If omitted, reads from stdin.
         #[arg(short, long)]
         share: Option<String>,
         /// Your identifier (optional, for participation logging)
@@ -68,7 +72,11 @@ fn resolve_socket(socket: Option<String>, config: Option<PathBuf>) -> anyhow::Re
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
     match cli.command {
-        Commands::Daemon { config, lockdown } => daemon::run(config, lockdown).await,
+        Commands::Daemon {
+            config,
+            lockdown,
+            no_strict_hardening,
+        } => daemon::run(config, lockdown, no_strict_hardening).await,
         Commands::Submit {
             share,
             user,

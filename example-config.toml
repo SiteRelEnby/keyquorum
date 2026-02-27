@@ -12,9 +12,17 @@ socket_path = "/run/keyquorum/keyquorum.sock"
 # tcp_port = 35000
 
 # Lockdown mode: maximum security posture. Rejects stdout action,
-# forces on_failure=wipe. May gain new restrictions between versions.
+# forces on_failure=wipe, implies strict_hardening.
+# May gain new restrictions between versions.
 # Can also be set via --lockdown CLI flag.
 # lockdown = true
+
+# Strict hardening: abort if memory protections (mlock, madvise) fail
+# on secret buffers. When true, shares are rejected if the OS cannot
+# guarantee memory safety for the buffer. Lockdown implies this.
+# Disable with --no-strict-hardening CLI flag or set to false here.
+# Default: true
+# strict_hardening = true
 
 [session]
 # Minimum shares needed to reconstruct the secret (K)
@@ -48,6 +56,15 @@ timeout_secs = 1800
 # Maximum share combinations to try during reconstruction (default: 100).
 # Caps the C(n,k) iteration to prevent runaway CPU usage with many shares.
 # max_combinations = 100
+
+# Require PEM envelope with metadata headers on submitted shares.
+# When true, shares without a KEYQUORUM-SHARE-V1 envelope and metadata
+# headers (Share, Scheme, Integrity) will be rejected. This enables
+# cross-validation of threshold/total against daemon config.
+# NOTE: Not forced by lockdown mode — headerless shares can be more secure
+# (less information leakage about the scheme parameters).
+# Default: false
+# require_metadata = false
 
 # Action to perform when quorum is reached.
 # Choose one of: luks, stdout, command

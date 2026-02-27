@@ -8,6 +8,7 @@ use tokio::sync::mpsc;
 
 use keyquorum_core::config::{ActionConfig, OnFailure, SessionConfig, Verification};
 use keyquorum_core::protocol::{ActionResult, ClientMessage, DaemonMessage};
+use keyquorum_core::share_format::{self, ShareEncoding, ShareFormatOptions};
 use keyquorum_core::types::ShareSubmission;
 
 // Re-use internal handler and session via the binary crate
@@ -56,12 +57,13 @@ impl TestDaemon {
             max_retries: 3,
             verification: Verification::None,
             max_combinations: 100,
+            require_metadata: false,
         };
         let action_config = ActionConfig::Stdout;
 
         // Spawn session task
         let session_handle = tokio::spawn(async move {
-            run_session(session_rx, session_config, action_config, false, false).await;
+            run_session(session_rx, session_config, action_config, false, false, false).await;
         });
 
         // Spawn listener task
@@ -386,6 +388,319 @@ async fn index_mismatch_rejected_over_socket() {
         }
         other => panic!(
             "expected ShareRejected, got {:?}",
+            serde_json::to_string(&other).unwrap()
+        ),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// V1 share format helpers
+// ---------------------------------------------------------------------------
+
+/// Generate N shares in V1 format (with PEM envelope + metadata + CRC32).
+fn make_v1_shares(
+    secret: &[u8],
+    threshold: u8,
+    n: u8,
+    include_envelope: bool,
+    include_metadata: bool,
+    encoding: ShareEncoding,
+) -> Vec<(u8, String)> {
+    let sharks = Sharks(threshold);
+    let dealer = sharks.dealer(secret);
+    let shares: Vec<sharks::Share> = dealer.take(n as usize).collect();
+    shares
+        .iter()
+        .enumerate()
+        .map(|(i, s)| {
+            let bytes = Vec::<u8>::from(s);
+            let index = bytes[0];
+            let opts = ShareFormatOptions {
+                encoding,
+                include_crc32: true,
+                include_envelope,
+                include_metadata,
+                share_number: (i + 1) as u8,
+                total_shares: n,
+                threshold,
+            };
+            let formatted = share_format::format_share(&bytes, &opts);
+            (index, formatted)
+        })
+        .collect()
+}
+
+/// Start a TestDaemon with require_metadata setting.
+impl TestDaemon {
+    async fn start_with_metadata(
+        threshold: u8,
+        total: u8,
+        timeout_secs: u64,
+        require_metadata: bool,
+    ) -> Self {
+        let dir = std::env::temp_dir().join(format!("kq-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let socket_path = dir.join(format!("test-{}.sock", rand_suffix()));
+        let _ = std::fs::remove_file(&socket_path);
+
+        let (session_tx, session_rx) = mpsc::channel::<SessionCommand>(32);
+
+        let session_config = SessionConfig {
+            threshold,
+            total_shares: total,
+            timeout_secs,
+            on_failure: OnFailure::Wipe,
+            max_retries: 3,
+            verification: Verification::None,
+            max_combinations: 100,
+            require_metadata,
+        };
+        let action_config = ActionConfig::Stdout;
+
+        let session_handle = tokio::spawn(async move {
+            run_session(session_rx, session_config, action_config, false, false, false).await;
+        });
+
+        let listener = UnixListener::bind(&socket_path).unwrap();
+        let listener_handle = tokio::spawn(async move {
+            while let Ok((stream, _)) = listener.accept().await {
+                let tx = session_tx.clone();
+                tokio::spawn(async move {
+                    let (reader, writer) = tokio::io::split(stream);
+                    handle_connection(reader, writer, tx).await;
+                });
+            }
+        });
+
+        TestDaemon {
+            socket_path,
+            _tasks: vec![session_handle, listener_handle],
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// V1 format integration tests
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn v1_format_end_to_end() {
+    let daemon = TestDaemon::start(2, 3, 60).await;
+    let shares = make_v1_shares(b"v1-secret", 2, 3, true, true, ShareEncoding::Base64);
+
+    // Submit first v1 share
+    let mut conn = UnixStream::connect(&daemon.socket_path).await.unwrap();
+    let resp = submit_share(&mut conn, shares[0].0, &shares[0].1, Some("alice")).await;
+    match resp {
+        DaemonMessage::ShareAccepted { status } => {
+            assert_eq!(status.shares_received, 1);
+        }
+        other => panic!(
+            "expected ShareAccepted, got {:?}",
+            serde_json::to_string(&other).unwrap()
+        ),
+    }
+
+    // Submit second v1 share — quorum
+    let mut conn = UnixStream::connect(&daemon.socket_path).await.unwrap();
+    let resp = submit_share(&mut conn, shares[1].0, &shares[1].1, Some("bob")).await;
+    match resp {
+        DaemonMessage::QuorumReached { action_result } => {
+            assert!(matches!(action_result, ActionResult::Success { .. }));
+        }
+        other => panic!(
+            "expected QuorumReached, got {:?}",
+            serde_json::to_string(&other).unwrap()
+        ),
+    }
+}
+
+#[tokio::test]
+async fn legacy_format_backward_compatible() {
+    // Legacy shares (raw sharks base64, no KQ prefix) should still work
+    let daemon = TestDaemon::start(2, 3, 60).await;
+    let shares = make_shares(b"legacy-compat", 2, 3);
+
+    let mut conn = UnixStream::connect(&daemon.socket_path).await.unwrap();
+    let resp = submit_share(&mut conn, shares[0].0, &shares[0].1, None).await;
+    assert!(matches!(resp, DaemonMessage::ShareAccepted { .. }));
+
+    let mut conn = UnixStream::connect(&daemon.socket_path).await.unwrap();
+    let resp = submit_share(&mut conn, shares[1].0, &shares[1].1, None).await;
+    assert!(matches!(resp, DaemonMessage::QuorumReached { .. }));
+}
+
+#[tokio::test]
+async fn mixed_format_shares_accepted() {
+    // Mix of legacy (raw base64) and v1 (envelope) shares in same session
+    let daemon = TestDaemon::start(2, 3, 60).await;
+
+    let secret = b"mixed-format-test";
+    let sharks_inst = Sharks(2);
+    let dealer = sharks_inst.dealer(secret.as_slice());
+    let raw_shares: Vec<sharks::Share> = dealer.take(3).collect();
+
+    // Share 0: legacy format (raw base64)
+    let bytes0 = Vec::<u8>::from(&raw_shares[0]);
+    let index0 = bytes0[0];
+    let engine = base64::engine::general_purpose::STANDARD;
+    let legacy_data = engine.encode(&bytes0);
+
+    // Share 1: v1 format with envelope
+    let bytes1 = Vec::<u8>::from(&raw_shares[1]);
+    let index1 = bytes1[0];
+    let opts = ShareFormatOptions {
+        encoding: ShareEncoding::Base64,
+        include_crc32: true,
+        include_envelope: true,
+        include_metadata: true,
+        share_number: 2,
+        total_shares: 3,
+        threshold: 2,
+    };
+    let v1_data = share_format::format_share(&bytes1, &opts);
+
+    // Submit legacy share
+    let mut conn = UnixStream::connect(&daemon.socket_path).await.unwrap();
+    let resp = submit_share(&mut conn, index0, &legacy_data, None).await;
+    match &resp {
+        DaemonMessage::ShareAccepted { .. } => {}
+        other => panic!(
+            "legacy share rejected: {}",
+            serde_json::to_string(other).unwrap()
+        ),
+    }
+
+    // Submit v1 share — should reach quorum
+    let mut conn = UnixStream::connect(&daemon.socket_path).await.unwrap();
+    let resp = submit_share(&mut conn, index1, &v1_data, None).await;
+    match &resp {
+        DaemonMessage::QuorumReached { .. } => {}
+        other => panic!(
+            "mixed format quorum failed: {}",
+            serde_json::to_string(other).unwrap()
+        ),
+    }
+}
+
+#[tokio::test]
+async fn v1_bare_base32_accepted() {
+    let daemon = TestDaemon::start(2, 3, 60).await;
+    let shares = make_v1_shares(b"base32-test", 2, 3, false, false, ShareEncoding::Base32);
+
+    let mut conn = UnixStream::connect(&daemon.socket_path).await.unwrap();
+    let resp = submit_share(&mut conn, shares[0].0, &shares[0].1, None).await;
+    match &resp {
+        DaemonMessage::ShareAccepted { .. } => {}
+        other => panic!(
+            "base32 share rejected: {}",
+            serde_json::to_string(other).unwrap()
+        ),
+    }
+
+    let mut conn = UnixStream::connect(&daemon.socket_path).await.unwrap();
+    let resp = submit_share(&mut conn, shares[1].0, &shares[1].1, None).await;
+    match &resp {
+        DaemonMessage::QuorumReached { .. } => {}
+        other => panic!(
+            "base32 quorum failed: {}",
+            serde_json::to_string(other).unwrap()
+        ),
+    }
+}
+
+#[tokio::test]
+async fn require_metadata_rejects_bare_share() {
+    let daemon = TestDaemon::start_with_metadata(2, 3, 60, true).await;
+    // Submit a bare v1 share (no envelope)
+    let shares = make_v1_shares(b"meta-reject", 2, 3, false, false, ShareEncoding::Base64);
+
+    let mut conn = UnixStream::connect(&daemon.socket_path).await.unwrap();
+    let resp = submit_share(&mut conn, shares[0].0, &shares[0].1, None).await;
+    match resp {
+        DaemonMessage::ShareRejected { reason } => {
+            assert!(
+                reason.contains("metadata") || reason.contains("envelope"),
+                "reason should mention metadata/envelope: {}",
+                reason
+            );
+        }
+        other => panic!(
+            "expected ShareRejected, got {:?}",
+            serde_json::to_string(&other).unwrap()
+        ),
+    }
+}
+
+#[tokio::test]
+async fn require_metadata_accepts_envelope_share() {
+    let daemon = TestDaemon::start_with_metadata(2, 3, 60, true).await;
+    let shares = make_v1_shares(b"meta-accept", 2, 3, true, true, ShareEncoding::Base64);
+
+    let mut conn = UnixStream::connect(&daemon.socket_path).await.unwrap();
+    let resp = submit_share(&mut conn, shares[0].0, &shares[0].1, None).await;
+    match resp {
+        DaemonMessage::ShareAccepted { status } => {
+            assert_eq!(status.shares_received, 1);
+        }
+        other => panic!(
+            "expected ShareAccepted, got {:?}",
+            serde_json::to_string(&other).unwrap()
+        ),
+    }
+
+    let mut conn = UnixStream::connect(&daemon.socket_path).await.unwrap();
+    let resp = submit_share(&mut conn, shares[1].0, &shares[1].1, None).await;
+    match &resp {
+        DaemonMessage::QuorumReached { .. } => {}
+        other => panic!(
+            "expected QuorumReached with metadata, got {}",
+            serde_json::to_string(other).unwrap()
+        ),
+    }
+}
+
+#[tokio::test]
+async fn require_metadata_rejects_legacy_share() {
+    let daemon = TestDaemon::start_with_metadata(2, 3, 60, true).await;
+    // Legacy shares have no envelope at all
+    let shares = make_shares(b"legacy-reject", 2, 3);
+
+    let mut conn = UnixStream::connect(&daemon.socket_path).await.unwrap();
+    let resp = submit_share(&mut conn, shares[0].0, &shares[0].1, None).await;
+    match resp {
+        DaemonMessage::ShareRejected { reason } => {
+            assert!(
+                reason.contains("metadata") || reason.contains("envelope"),
+                "reason should mention metadata/envelope: {}",
+                reason
+            );
+        }
+        other => panic!(
+            "expected ShareRejected for legacy share with require_metadata, got {:?}",
+            serde_json::to_string(&other).unwrap()
+        ),
+    }
+}
+
+#[tokio::test]
+async fn require_metadata_rejects_envelope_without_headers() {
+    let daemon = TestDaemon::start_with_metadata(2, 3, 60, true).await;
+    // Envelope but no metadata headers
+    let shares = make_v1_shares(b"no-headers", 2, 3, true, false, ShareEncoding::Base64);
+
+    let mut conn = UnixStream::connect(&daemon.socket_path).await.unwrap();
+    let resp = submit_share(&mut conn, shares[0].0, &shares[0].1, None).await;
+    match resp {
+        DaemonMessage::ShareRejected { reason } => {
+            assert!(
+                reason.contains("metadata") || reason.contains("envelope"),
+                "reason should mention metadata: {}",
+                reason
+            );
+        }
+        other => panic!(
+            "expected ShareRejected for envelope without headers, got {:?}",
             serde_json::to_string(&other).unwrap()
         ),
     }

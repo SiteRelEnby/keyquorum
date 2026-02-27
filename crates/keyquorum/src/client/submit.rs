@@ -1,5 +1,4 @@
 use anyhow::{bail, Result};
-use base64::Engine;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
 use keyquorum_core::protocol::{ActionResult, ClientMessage, DaemonMessage};
@@ -7,41 +6,37 @@ use keyquorum_core::types::ShareSubmission;
 
 pub async fn run(share_arg: Option<String>, user: Option<String>, socket: String) -> Result<()> {
     // Get share data from arg or stdin
-    let share_b64 = match share_arg {
+    let share_input = match share_arg {
         Some(s) => s.trim().to_string(),
         None => {
-            eprintln!("Enter share (base64):");
+            eprintln!("Enter share:");
             let mut buf = String::new();
-            std::io::stdin().read_line(&mut buf)?;
+            std::io::Read::read_to_string(&mut std::io::stdin(), &mut buf)?;
             buf.trim().to_string()
         }
     };
 
-    if share_b64.is_empty() {
+    if share_input.is_empty() {
         bail!("no share data provided");
     }
 
-    // Decode to validate
-    let engine = base64::engine::general_purpose::STANDARD;
-    let share_bytes = engine.decode(&share_b64)?;
+    // Parse the share (auto-detects format: PEM envelope, bare v1, legacy base64/base32)
+    let parsed = keyquorum_core::share_format::parse_share(&share_input)
+        .map_err(|e| anyhow::anyhow!("invalid share: {}", e))?;
 
-    if share_bytes.is_empty() {
-        bail!("share data is empty");
-    }
-
-    // First byte is the share index
-    let index = share_bytes[0];
+    let index = parsed.index;
 
     // Validate it's a valid sharks share
-    if sharks::Share::try_from(share_bytes.as_slice()).is_err() {
+    if sharks::Share::try_from(parsed.sharks_data.as_slice()).is_err() {
         bail!("invalid share data");
     }
 
-    // Build the message
+    // Build the message — send the original input string so the daemon
+    // can do its own full parsing (including metadata validation)
     let msg = ClientMessage::SubmitShare {
         share: ShareSubmission {
             index,
-            data: share_b64,
+            data: share_input,
             submitted_by: user,
         },
     };

@@ -1,10 +1,11 @@
 use anyhow::{bail, Result};
-use base64::Engine;
 use clap::{Parser, ValueEnum};
 use sharks::Sharks;
 use std::io::Read;
 use std::path::PathBuf;
 use zeroize::Zeroize;
+
+use keyquorum_core::share_format::{self, ShareEncoding, ShareFormatOptions};
 
 #[derive(Parser)]
 #[command(name = "keyquorum-split", about = "Split a secret into Shamir shares", version)]
@@ -32,6 +33,24 @@ struct Cli {
     /// invocations of downstream tools.
     #[arg(long)]
     no_checksum: bool,
+    /// Skip per-share CRC32 integrity check
+    #[arg(long)]
+    no_integrity: bool,
+    /// Omit metadata headers (share number, threshold, scheme) from PEM envelope
+    #[arg(long)]
+    no_metadata: bool,
+    /// Output V1 binary payload only, no PEM envelope
+    #[arg(long)]
+    bare: bool,
+    /// Payload encoding
+    #[arg(long, value_enum, default_value_t = Encoding::Base64)]
+    encoding: Encoding,
+    /// Disable strict hardening: allow operation if memory protections
+    /// (mlock, madvise) fail. Not recommended for production.
+    #[arg(long)]
+    no_strict_hardening: bool,
+    // Future: --raw-shares for truly raw sharks bytes (no KQ prefix),
+    // for interoperability with other Shamir tools.
 }
 
 #[derive(Clone, ValueEnum)]
@@ -43,6 +62,12 @@ enum OutputMode {
     // Future modes:
     // Interactive — show one at a time, clear between
     // Age — encrypt each share to a recipient's age public key
+}
+
+#[derive(Clone, ValueEnum)]
+enum Encoding {
+    Base64,
+    Base32,
 }
 
 fn main() -> Result<()> {
@@ -99,13 +124,17 @@ fn main() -> Result<()> {
     }
 
     // Apply memory protections to the final secret buffer (including checksum if appended)
+    let strict_hardening = !cli.no_strict_hardening || cli.lockdown;
+    if !strict_hardening {
+        eprintln!("WARNING: strict_hardening disabled — memory protections will not be enforced");
+    }
     let failures = keyquorum_core::memory::protect_secret(&secret);
     if !failures.is_empty() {
         for (name, err) in &failures {
             eprintln!("warning: memory protection {} failed: {}", name, err);
         }
-        if cli.lockdown {
-            bail!("lockdown mode: failed to apply memory protections to secret");
+        if strict_hardening {
+            bail!("strict_hardening: failed to apply memory protections to secret");
         }
     }
 
@@ -114,12 +143,17 @@ fn main() -> Result<()> {
     let dealer = sharks.dealer(&secret);
     let shares: Vec<sharks::Share> = dealer.take(cli.shares as usize).collect();
 
+    // Build format options from CLI flags
+    let encoding = match cli.encoding {
+        Encoding::Base64 => ShareEncoding::Base64,
+        Encoding::Base32 => ShareEncoding::Base32,
+    };
+
     // Output shares
-    let engine = base64::engine::general_purpose::STANDARD;
     match cli.output {
-        OutputMode::Stdout => output_stdout(&shares, &engine),
+        OutputMode::Stdout => output_stdout(&shares, &cli, encoding),
         OutputMode::Files => {
-            output_files(&shares, &engine, cli.dir.as_ref().expect("validated above"))?
+            output_files(&shares, &cli, encoding, cli.dir.as_ref().expect("validated above"))?
         }
     }
 
@@ -132,19 +166,33 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-fn output_stdout(shares: &[sharks::Share], engine: &base64::engine::GeneralPurpose) {
+fn make_format_opts(cli: &Cli, encoding: ShareEncoding, share_number: u8) -> ShareFormatOptions {
+    ShareFormatOptions {
+        encoding,
+        include_crc32: !cli.no_integrity,
+        include_envelope: !cli.bare,
+        include_metadata: !cli.no_metadata && !cli.bare,
+        share_number,
+        total_shares: cli.shares,
+        threshold: cli.threshold,
+    }
+}
+
+fn output_stdout(shares: &[sharks::Share], cli: &Cli, encoding: ShareEncoding) {
     for (i, share) in shares.iter().enumerate() {
-        let bytes: Vec<u8> = Vec::from(share);
-        let index = bytes[0];
-        let encoded = engine.encode(&bytes);
+        let sharks_data: Vec<u8> = Vec::from(share);
+        let index = sharks_data[0];
+        let opts = make_format_opts(cli, encoding, (i + 1) as u8);
+        let formatted = share_format::format_share(&sharks_data, &opts);
         eprintln!("Share {} (index {}):", i + 1, index);
-        println!("{}", encoded);
+        println!("{}", formatted);
     }
 }
 
 fn output_files(
     shares: &[sharks::Share],
-    engine: &base64::engine::GeneralPurpose,
+    cli: &Cli,
+    encoding: ShareEncoding,
     dir: &PathBuf,
 ) -> Result<()> {
     std::fs::create_dir_all(dir).map_err(|e| {
@@ -152,11 +200,12 @@ fn output_files(
     })?;
 
     for (i, share) in shares.iter().enumerate() {
-        let bytes: Vec<u8> = Vec::from(share);
-        let index = bytes[0];
-        let encoded = engine.encode(&bytes);
+        let sharks_data: Vec<u8> = Vec::from(share);
+        let index = sharks_data[0];
+        let opts = make_format_opts(cli, encoding, (i + 1) as u8);
+        let formatted = share_format::format_share(&sharks_data, &opts);
         let filename = dir.join(format!("share-{}.txt", i + 1));
-        std::fs::write(&filename, format!("{}\n", encoded)).map_err(|e| {
+        std::fs::write(&filename, format!("{}\n", formatted)).map_err(|e| {
             anyhow::anyhow!("failed to write {}: {}", filename.display(), e)
         })?;
         eprintln!(

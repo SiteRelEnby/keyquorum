@@ -18,6 +18,10 @@ pub struct DaemonConfig {
     pub pid_file: Option<PathBuf>,
     #[serde(default)]
     pub lockdown: bool,
+    /// Fail if memory hardening (mlock, madvise) fails on secret buffers.
+    /// Default: true. Lockdown implies this.
+    #[serde(default = "default_true")]
+    pub strict_hardening: bool,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -34,6 +38,10 @@ pub struct SessionConfig {
     pub verification: Verification,
     #[serde(default = "default_max_combinations")]
     pub max_combinations: usize,
+    /// Reject shares without PEM envelope metadata headers.
+    /// Cross-validates envelope metadata against daemon config.
+    #[serde(default)]
+    pub require_metadata: bool,
 }
 
 /// What to do when reconstruction fails after reaching quorum.
@@ -91,6 +99,10 @@ impl Default for LoggingConfig {
             level: default_log_level(),
         }
     }
+}
+
+fn default_true() -> bool {
+    true
 }
 
 fn default_socket_path() -> PathBuf {
@@ -165,6 +177,7 @@ impl Config {
             return;
         }
         self.daemon.lockdown = true;
+        self.daemon.strict_hardening = true;
         self.session.on_failure = OnFailure::Wipe;
     }
 
@@ -504,6 +517,35 @@ type = "stdout"
     }
 
     #[test]
+    fn require_metadata_defaults_false() {
+        let toml = r#"
+[daemon]
+[session]
+threshold = 2
+total_shares = 3
+[action]
+type = "stdout"
+"#;
+        let config = Config::parse(toml).unwrap();
+        assert!(!config.session.require_metadata);
+    }
+
+    #[test]
+    fn parse_require_metadata() {
+        let toml = r#"
+[daemon]
+[session]
+threshold = 2
+total_shares = 3
+require_metadata = true
+[action]
+type = "stdout"
+"#;
+        let config = Config::parse(toml).unwrap();
+        assert!(config.session.require_metadata);
+    }
+
+    #[test]
     fn reject_zero_max_combinations() {
         let toml = r#"
 [daemon]
@@ -515,5 +557,73 @@ max_combinations = 0
 type = "stdout"
 "#;
         assert!(Config::parse(toml).is_err());
+    }
+
+    #[test]
+    fn strict_hardening_defaults_true() {
+        let toml = r#"
+[daemon]
+[session]
+threshold = 2
+total_shares = 3
+[action]
+type = "stdout"
+"#;
+        let config = Config::parse(toml).unwrap();
+        assert!(config.daemon.strict_hardening);
+    }
+
+    #[test]
+    fn strict_hardening_can_be_disabled() {
+        let toml = r#"
+[daemon]
+strict_hardening = false
+[session]
+threshold = 2
+total_shares = 3
+[action]
+type = "stdout"
+"#;
+        let config = Config::parse(toml).unwrap();
+        assert!(!config.daemon.strict_hardening);
+    }
+
+    #[test]
+    fn lockdown_implies_strict_hardening() {
+        let toml = r#"
+[daemon]
+lockdown = true
+strict_hardening = false
+[session]
+threshold = 2
+total_shares = 3
+[action]
+type = "luks"
+device = "/dev/sda2"
+name = "cryptdata"
+"#;
+        let mut config = Config::parse(toml).unwrap();
+        assert!(!config.daemon.strict_hardening); // as parsed
+        config.apply_lockdown(false);
+        assert!(config.daemon.strict_hardening); // lockdown implies it
+    }
+
+    #[test]
+    fn cli_lockdown_implies_strict_hardening() {
+        let toml = r#"
+[daemon]
+strict_hardening = false
+[session]
+threshold = 2
+total_shares = 3
+[action]
+type = "luks"
+device = "/dev/sda2"
+name = "cryptdata"
+"#;
+        let mut config = Config::parse(toml).unwrap();
+        assert!(!config.daemon.strict_hardening);
+        config.apply_lockdown(true); // CLI --lockdown
+        assert!(config.daemon.strict_hardening);
     }
 }
