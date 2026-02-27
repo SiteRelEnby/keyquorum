@@ -8,7 +8,18 @@ use zeroize::Zeroize;
 use keyquorum_core::share_format::{self, ShareEncoding, ShareFormatOptions};
 
 #[derive(Parser)]
-#[command(name = "keyquorum-split", about = "Split a secret into Shamir shares", version)]
+#[command(
+    name = "keyquorum-split",
+    about = "Split a secret into Shamir shares",
+    long_about = "Split a secret into Shamir shares.\n\n\
+        Reads a secret from stdin and generates N shares, any K of which can reconstruct \
+        the original. By default, each share is output as a PEM envelope \
+        (KEYQUORUM-SHARE-V1) with metadata headers and a CRC32 integrity check, and \
+        a blake3 verification checksum is embedded in the secret before splitting.\n\n\
+        Use --bare for the V1 binary payload without the PEM envelope, or --no-metadata \
+        to keep the envelope but omit the headers.",
+    version,
+)]
 struct Cli {
     /// Total number of shares to generate (2-255)
     #[arg(short = 'n', long)]
