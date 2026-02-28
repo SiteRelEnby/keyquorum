@@ -5,6 +5,7 @@
 [![License: Apache-2.0](https://img.shields.io/crates/l/keyquorum.svg)](https://github.com/SiteRelEnby/keyquorum/blob/main/LICENSE)
 ![transrights](https://pride-badges.pony.workers.dev/static/v1?label=trans%20rights&stripeWidth=6&stripeColors=5BCEFA,F5A9B8,FFFFFF,F5A9B8,5BCEFA)
 ![enbyware](https://pride-badges.pony.workers.dev/static/v1?label=enbyware&labelColor=%23555&stripeWidth=8&stripeColors=FCF434%2CFFFFFF%2C9C59D1%2C2C2C2C)
+![pluralmade](https://pride-badges.pony.workers.dev/static/v1?label=plural+made&labelColor=%23555&stripeWidth=8&stripeColors=2e0525%2C553578%2C7675c3%2C89c7b0%2Cf4ecbd)
 
 Shamir secret sharing daemon for distributed teams. Split a secret into shares, distribute them to team members, and reconstruct the secret only when a quorum submits their shares. Nobody ever handles someone else's share or sees the reconstructed key. Shares implemented with [sharks](https://github.com/c0dearm/sharks).
 
