@@ -1,8 +1,8 @@
 # keyquorum
 
-Shamir secret sharing daemon for distributed teams. Split a secret into shares, distribute them to team members, and reconstruct the secret only when a quorum submits their shares. Nobody ever handles someone else's share or sees the reconstructed key.
+Shamir secret sharing daemon for distributed teams. Split a secret into shares, distribute them to team members, and reconstruct the secret only when a quorum submits their shares. Nobody ever handles someone else's share or sees the reconstructed key. Shares implemented with [sharks](https://github.com/c0dearm/sharks).
 
-Built for unlocking LUKS partitions, but works with anything that takes a key on stdin.
+Built for unlocking LUKS partitions, but works with anything that takes a key on stdin. Other things may be supported in the future.
 
 ## Install
 
@@ -16,6 +16,8 @@ Or build from source:
 cargo build --release
 # binaries at target/release/keyquorum and target/release/keyquorum-split
 ```
+
+**Platform support:** Linux is the primary and tested target. macOS builds are **highly experimental and untested** by the project maintainers — memory hardening features (DONTFORK, DONTDUMP, prctl) are Linux-only and are silently skipped on macOS. The maintainer does not have access to Apple hardware. macOS PRs are welcome but please do not open issues requesting Apple support.
 
 ## Quick start
 
@@ -284,6 +286,7 @@ This is a security-critical tool. The design assumes the host is trusted but par
 - **No participant authentication** — anyone with a valid share can submit (share-only trust model)
 - **Single session at a time** — one unlock operation at a time per daemon instance
 - **Metadata envelope is not signed** — PEM headers are convenience-only and can be forged. See [Metadata is not authenticated](#metadata-is-not-authenticated)
+- **Threat model does not currently protect against a malicious dealer** - there are mitigations planned (e.g. per-recipient asymmetric encryption of shares rather than plaintext), but these are not currently meaningfully implemented.
 
 ## CLI reference
 

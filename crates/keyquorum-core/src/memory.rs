@@ -2,7 +2,9 @@ use std::io;
 
 /// Disable core dumps and /proc/self/mem access for this process.
 /// Must be called early in main() before any secrets are loaded.
+/// On non-Linux platforms, this is a no-op.
 pub fn disable_core_dumps() -> io::Result<()> {
+    #[cfg(target_os = "linux")]
     unsafe {
         let ret = libc::prctl(libc::PR_SET_DUMPABLE, 0, 0, 0, 0);
         if ret != 0 {
@@ -14,7 +16,9 @@ pub fn disable_core_dumps() -> io::Result<()> {
 
 /// Prevent exec'd child processes from gaining new privileges.
 /// Blocks setuid/setgid, Linux Security Module transitions, etc.
+/// On non-Linux platforms, this is a no-op.
 pub fn set_no_new_privs() -> io::Result<()> {
+    #[cfg(target_os = "linux")]
     unsafe {
         let ret = libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0);
         if ret != 0 {
@@ -53,15 +57,19 @@ pub fn munlock_slice(data: &[u8]) -> io::Result<()> {
 }
 
 /// Mark memory pages as DONTFORK to prevent copy-on-write leaks to child processes.
+/// On non-Linux platforms (where MADV_DONTFORK is unavailable), this is a no-op.
 pub fn madvise_dontfork(data: &[u8]) -> io::Result<()> {
     if data.is_empty() {
         return Ok(());
     }
-    let (aligned_ptr, aligned_len) = page_align_region(data.as_ptr(), data.len());
-    unsafe {
-        let ret = libc::madvise(aligned_ptr, aligned_len, libc::MADV_DONTFORK);
-        if ret != 0 {
-            return Err(io::Error::last_os_error());
+    #[cfg(target_os = "linux")]
+    {
+        let (aligned_ptr, aligned_len) = page_align_region(data.as_ptr(), data.len());
+        unsafe {
+            let ret = libc::madvise(aligned_ptr, aligned_len, libc::MADV_DONTFORK);
+            if ret != 0 {
+                return Err(io::Error::last_os_error());
+            }
         }
     }
     Ok(())
@@ -70,15 +78,19 @@ pub fn madvise_dontfork(data: &[u8]) -> io::Result<()> {
 /// Mark memory pages as DONTDUMP to exclude them from core dumps.
 /// Complements PR_SET_DUMPABLE — if dumpable is re-enabled later (e.g. by
 /// a signal handler), these pages are still excluded.
+/// On non-Linux platforms (where MADV_DONTDUMP is unavailable), this is a no-op.
 pub fn madvise_dontdump(data: &[u8]) -> io::Result<()> {
     if data.is_empty() {
         return Ok(());
     }
-    let (aligned_ptr, aligned_len) = page_align_region(data.as_ptr(), data.len());
-    unsafe {
-        let ret = libc::madvise(aligned_ptr, aligned_len, libc::MADV_DONTDUMP);
-        if ret != 0 {
-            return Err(io::Error::last_os_error());
+    #[cfg(target_os = "linux")]
+    {
+        let (aligned_ptr, aligned_len) = page_align_region(data.as_ptr(), data.len());
+        unsafe {
+            let ret = libc::madvise(aligned_ptr, aligned_len, libc::MADV_DONTDUMP);
+            if ret != 0 {
+                return Err(io::Error::last_os_error());
+            }
         }
     }
     Ok(())
@@ -175,6 +187,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(target_os = "linux")]
     fn madvise_dontdump_works() {
         let buf = vec![0u8; 64];
         // Should succeed on Linux

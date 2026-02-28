@@ -68,6 +68,7 @@ jobs:
     name: Build ${{ matrix.target }}
     needs: [test, verify-version]
     runs-on: ${{ matrix.os }}
+    continue-on-error: ${{ contains(matrix.target, 'apple') }}
     strategy:
       matrix:
         include:
