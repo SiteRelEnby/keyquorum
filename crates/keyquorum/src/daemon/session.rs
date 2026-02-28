@@ -150,11 +150,12 @@ impl Session {
 
         // Extract sharks data and index from parsed result
         let actual_index = parsed.index;
-        let bytes = parsed.sharks_data.clone();
+        let mut bytes = parsed.sharks_data.clone();
         drop(parsed); // zeroize the ParsedShare copy
 
         // Validate it's a valid sharks share
         if sharks::Share::try_from(bytes.as_slice()).is_err() {
+            bytes.zeroize();
             return DaemonMessage::ShareRejected {
                 reason: "invalid share data".to_string(),
             };
@@ -162,6 +163,7 @@ impl Session {
 
         // Verify index matches client-supplied value
         if share.index != actual_index {
+            bytes.zeroize();
             return DaemonMessage::ShareRejected {
                 reason: format!(
                     "Share index mismatch: header says {} but share data contains index {}",
@@ -172,6 +174,7 @@ impl Session {
 
         // Check for duplicate index (using verified index)
         if self.received_indices.contains(&actual_index) {
+            bytes.zeroize();
             return DaemonMessage::ShareRejected {
                 reason: format!("Share with index {} already submitted", actual_index),
             };
@@ -184,6 +187,7 @@ impl Session {
                 warn!("memory protection {} failed for share data: {}", name, err);
             }
             if self.strict_hardening {
+                bytes.zeroize();
                 return DaemonMessage::ShareRejected {
                     reason: "strict_hardening: failed to apply memory protections to share data"
                         .to_string(),
@@ -393,12 +397,13 @@ impl Session {
                             "max retries exhausted, wiping shares"
                         );
                     }
+                    let attempts = self.retry_attempts;
                     self.reset();
                     DaemonMessage::QuorumReached {
                         action_result: ActionResult::Failure {
                             message: format!(
                                 "Reconstruction failed after {} attempts, all shares wiped",
-                                self.retry_attempts
+                                attempts
                             ),
                         },
                     }

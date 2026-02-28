@@ -38,10 +38,6 @@ pub async fn run(share_arg: Option<String>, user: Option<String>, socket: String
                 }
                 saw_content = true;
                 buf.push_str(&line);
-                // If we already read the payload after envelope blank, we're done
-                if saw_envelope_blank {
-                    break;
-                }
             }
             buf.trim().to_string()
         }
