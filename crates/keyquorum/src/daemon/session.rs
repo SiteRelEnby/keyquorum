@@ -126,11 +126,19 @@ impl Session {
             }
         }
 
-        // Validate metadata if require_metadata is enabled
+        // Validate metadata if require_metadata is enabled.
+        // Requires a PEM envelope with at least the Share: header (which carries
+        // share_number, total_shares, threshold). A share with only Scheme: or
+        // Integrity: headers is not sufficient.
         if self.config.require_metadata {
-            if !parsed.had_envelope || parsed.metadata.is_none() {
+            let has_complete_metadata = parsed.had_envelope
+                && parsed.metadata.as_ref().is_some_and(|m| {
+                    m.share_number.is_some() && m.total_shares.is_some() && m.threshold.is_some()
+                });
+            if !has_complete_metadata {
                 return DaemonMessage::ShareRejected {
-                    reason: "share rejected: PEM envelope with metadata required \
+                    reason: "share rejected: PEM envelope with complete metadata required \
+                             (Share header with share number, total, and threshold) \
                              (require_metadata = true)"
                         .to_string(),
                 };
@@ -1663,6 +1671,58 @@ mod tests {
                 assert!(
                     reason.contains("mismatch") || reason.contains("metadata"),
                     "expected metadata mismatch, got: {}",
+                    reason
+                );
+            }
+            other => panic!(
+                "expected ShareRejected, got {:?}",
+                serde_json::to_string(&other).unwrap()
+            ),
+        }
+    }
+
+    #[test]
+    fn require_metadata_rejects_partial_headers() {
+        let mut session = Session::new(
+            SessionConfig {
+                threshold: 2,
+                total_shares: 3,
+                timeout_secs: 60,
+                on_failure: OnFailure::Wipe,
+                max_retries: 3,
+                verification: Verification::None,
+                max_combinations: 100,
+                require_metadata: true,
+            },
+            ActionConfig::Stdout,
+            false,
+            false,
+            false,
+        );
+
+        // Craft an envelope with only Scheme: header (no Share: header)
+        let shares_raw = make_shares(b"partial-meta", 2, 3);
+        let engine = base64::engine::general_purpose::STANDARD;
+        let sharks_data = engine.decode(&shares_raw[0]).unwrap();
+        let index = sharks_data[0];
+        let binary = keyquorum_core::share_format::encode_v1(&sharks_data, true);
+        let encoded = engine.encode(&binary);
+        let envelope = format!(
+            "KEYQUORUM-SHARE-V1\nScheme: shamir-gf256\n\n{}",
+            encoded,
+        );
+
+        let response = session.submit_share(ShareSubmission {
+            index,
+            data: envelope,
+            submitted_by: None,
+        });
+
+        match response {
+            DaemonMessage::ShareRejected { reason } => {
+                assert!(
+                    reason.contains("metadata") || reason.contains("require_metadata"),
+                    "expected metadata rejection for partial headers, got: {}",
                     reason
                 );
             }
