@@ -1,6 +1,6 @@
 use anyhow::{bail, Result};
 use clap::{Parser, ValueEnum};
-use sharks::Sharks;
+use blahaj::Sharks;
 use std::io::Read;
 use std::path::PathBuf;
 use zeroize::Zeroize;
@@ -153,7 +153,7 @@ fn main() -> Result<()> {
     // Generate shares
     let sharks = Sharks(cli.threshold);
     let dealer = sharks.dealer(&secret);
-    let shares: Vec<sharks::Share> = dealer.take(cli.shares as usize).collect();
+    let shares: Vec<blahaj::Share> = dealer.take(cli.shares as usize).collect();
 
     // Build format options from CLI flags
     let encoding = match cli.encoding {
@@ -190,7 +190,7 @@ fn make_format_opts(cli: &Cli, encoding: ShareEncoding, share_number: u8) -> Sha
     }
 }
 
-fn output_stdout(shares: &[sharks::Share], cli: &Cli, encoding: ShareEncoding) {
+fn output_stdout(shares: &[blahaj::Share], cli: &Cli, encoding: ShareEncoding) {
     for (i, share) in shares.iter().enumerate() {
         let mut sharks_data: Vec<u8> = Vec::from(share);
         let index = sharks_data[0];
@@ -204,7 +204,7 @@ fn output_stdout(shares: &[sharks::Share], cli: &Cli, encoding: ShareEncoding) {
 }
 
 fn output_files(
-    shares: &[sharks::Share],
+    shares: &[blahaj::Share],
     cli: &Cli,
     encoding: ShareEncoding,
     dir: &PathBuf,

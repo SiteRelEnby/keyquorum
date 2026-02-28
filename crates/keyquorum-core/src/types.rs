@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
 /// A share submitted by a participant, safe for transport over the wire.
-/// The `data` field is base64-encoded raw share bytes from sharks::Share.
+/// The `data` field is base64-encoded raw share bytes from blahaj::Share.
 /// The first byte of the decoded data is the x-coordinate (index).
 #[derive(Clone, Serialize, Deserialize, Zeroize, ZeroizeOnDrop)]
 pub struct ShareSubmission {

@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
 use base64::Engine;
-use sharks::Sharks;
+use blahaj::Sharks;
 use tokio::io::AsyncWriteExt;
 use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::mpsc;
@@ -19,7 +19,7 @@ use keyquorum::daemon::session::{run_session, SessionCommand};
 fn make_shares(secret: &[u8], threshold: u8, n: u8) -> Vec<(u8, String)> {
     let sharks = Sharks(threshold);
     let dealer = sharks.dealer(secret);
-    let shares: Vec<sharks::Share> = dealer.take(n as usize).collect();
+    let shares: Vec<blahaj::Share> = dealer.take(n as usize).collect();
     let engine = base64::engine::general_purpose::STANDARD;
     shares
         .iter()
@@ -408,7 +408,7 @@ fn make_v1_shares(
 ) -> Vec<(u8, String)> {
     let sharks = Sharks(threshold);
     let dealer = sharks.dealer(secret);
-    let shares: Vec<sharks::Share> = dealer.take(n as usize).collect();
+    let shares: Vec<blahaj::Share> = dealer.take(n as usize).collect();
     shares
         .iter()
         .enumerate()
@@ -538,7 +538,7 @@ async fn mixed_format_shares_accepted() {
     let secret = b"mixed-format-test";
     let sharks_inst = Sharks(2);
     let dealer = sharks_inst.dealer(secret.as_slice());
-    let raw_shares: Vec<sharks::Share> = dealer.take(3).collect();
+    let raw_shares: Vec<blahaj::Share> = dealer.take(3).collect();
 
     // Share 0: legacy format (raw base64)
     let bytes0 = Vec::<u8>::from(&raw_shares[0]);

@@ -1,7 +1,7 @@
 use std::collections::HashSet;
 use std::time::Duration;
 
-use sharks::Sharks;
+use blahaj::Sharks;
 use tokio::sync::{mpsc, oneshot};
 use tokio::time::Instant;
 use tracing::{info, warn};
@@ -154,7 +154,7 @@ impl Session {
         drop(parsed); // zeroize the ParsedShare copy
 
         // Validate it's a valid sharks share
-        if sharks::Share::try_from(bytes.as_slice()).is_err() {
+        if blahaj::Share::try_from(bytes.as_slice()).is_err() {
             bytes.zeroize();
             return DaemonMessage::ShareRejected {
                 reason: "invalid share data".to_string(),
@@ -249,10 +249,10 @@ impl Session {
             combos_tried += 1;
 
             // Parse shares for this combination
-            let subset: Vec<sharks::Share> = combo
+            let subset: Vec<blahaj::Share> = combo
                 .iter()
                 .filter_map(|&i| {
-                    sharks::Share::try_from(self.shares[i].1.bytes.as_slice()).ok()
+                    blahaj::Share::try_from(self.shares[i].1.bytes.as_slice()).ok()
                 })
                 .collect();
 
@@ -570,12 +570,12 @@ pub async fn run_session(
 mod tests {
     use super::*;
     use base64::Engine;
-    use sharks::Sharks;
+    use blahaj::Sharks;
 
     fn make_shares(secret: &[u8], threshold: u8, n: u8) -> Vec<String> {
         let sharks = Sharks(threshold);
         let dealer = sharks.dealer(secret);
-        let shares: Vec<sharks::Share> = dealer.take(n as usize).collect();
+        let shares: Vec<blahaj::Share> = dealer.take(n as usize).collect();
         let engine = base64::engine::general_purpose::STANDARD;
         shares
             .iter()
@@ -1505,7 +1505,7 @@ mod tests {
     ) -> Vec<(u8, String)> {
         let sharks = Sharks(threshold);
         let dealer = sharks.dealer(secret);
-        let shares: Vec<sharks::Share> = dealer.take(total as usize).collect();
+        let shares: Vec<blahaj::Share> = dealer.take(total as usize).collect();
         shares
             .iter()
             .enumerate()
@@ -1711,7 +1711,7 @@ mod tests {
         let mut session = make_test_session(2, 3);
         let sharks_instance = Sharks(2);
         let dealer = sharks_instance.dealer(b"base32-test");
-        let shares: Vec<sharks::Share> = dealer.take(3).collect();
+        let shares: Vec<blahaj::Share> = dealer.take(3).collect();
 
         let bytes: Vec<u8> = Vec::from(&shares[0]);
         let index = bytes[0];

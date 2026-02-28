@@ -45,9 +45,9 @@ New features should be additive. New config fields must have sensible defaults t
 
 ### Don't layer on top of Shamir
 
-Do not implement Feldman VSS, Pedersen VSS, or other verifiable secret sharing schemes as wrappers around the existing `sharks` Shamir implementation. These schemes have fundamentally different share structures, verification mechanisms, and security properties. If VSS support is added, it should be a separate scheme implementation (likely via `vsss-rs`), selectable via a `Scheme:` header in the share format, not a bolt-on.
+Do not implement Feldman VSS, Pedersen VSS, or other verifiable secret sharing schemes as wrappers around the existing `blahaj` Shamir implementation. These schemes have fundamentally different share structures, verification mechanisms, and security properties. If VSS support is added, it should be a separate scheme implementation (likely via `vsss-rs`), selectable via a `Scheme:` header in the share format, not a bolt-on.
 
-Similarly, do not implement custom cryptographic constructions. Use established libraries (`blake3`, `sharks`, `age`, etc.). If you think you need custom crypto, you're wrong. [This includes attempting novel constructions using 'safe' primitives from widely implemented libraries](https://soatok.blog/2025/01/31/hell-is-overconfident-developers-writing-encryption-code/).
+Similarly, do not implement custom cryptographic constructions. Use established libraries (`blake3`, `blahaj`, `age`, etc.). If you think you need custom crypto, you're wrong. [This includes attempting novel constructions using 'safe' primitives from widely implemented libraries](https://soatok.blog/2025/01/31/hell-is-overconfident-developers-writing-encryption-code/).
 
 ### Test coverage
 
@@ -80,8 +80,8 @@ Don't add mitigations for out-of-scope threats without discussion. Don't remove 
 
 These are things that have actually caused bugs in this codebase:
 
-- **`sharks` assigns random x-coordinates**, not sequential 1,2,3. Don't assume share indices are predictable. In tests, corrupt bytes within same-split shares rather than mixing shares from different splits.
-- **`sharks::recover` always produces output**, even with wrong shares. The embedded blake3 checksum is how we verify correctness, not the reconstruction itself.
+- **`blahaj` (Shamir library) assigns random x-coordinates**, not sequential 1,2,3. Don't assume share indices are predictable. In tests, corrupt bytes within same-split shares rather than mixing shares from different splits.
+- **`blahaj::Sharks::recover` always produces output**, even with wrong shares. The embedded blake3 checksum is how we verify correctness, not the reconstruction itself.
 - **`ParsedShare` implements `ZeroizeOnDrop`** — you cannot move fields out of it. Clone what you need before it drops.
 - **`DaemonMessage` does not implement `Debug`** — use `serde_json::to_string()` for debug output in tests.
 - **`Vec::truncate()` leaves data in capacity** — zeroize the bytes first, then truncate.

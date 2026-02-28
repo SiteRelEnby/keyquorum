@@ -1,9 +1,5 @@
 [advisories]
 version = 2
-# sharks has a known bias in polynomial coefficients (RUSTSEC-2024-0398).
-# Impact is low for single-use secrets (LUKS keys). Migration to blahaj
-# (maintained fork with the fix) is planned.
-ignore = ["RUSTSEC-2024-0398"]
 
 [licenses]
 version = 2

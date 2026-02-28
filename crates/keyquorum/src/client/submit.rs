@@ -61,7 +61,7 @@ pub async fn run(user: Option<String>, socket: String) -> Result<()> {
     let index = parsed.index;
 
     // Validate it's a valid sharks share
-    if sharks::Share::try_from(parsed.sharks_data.as_slice()).is_err() {
+    if blahaj::Share::try_from(parsed.sharks_data.as_slice()).is_err() {
         bail!("invalid share data");
     }
 
