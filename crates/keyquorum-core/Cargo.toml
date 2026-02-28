@@ -5,6 +5,7 @@ edition = "2021"
 license = "Apache-2.0"
 repository = "https://github.com/SiteRelEnby/keyquorum"
 description = "Shared library for keyquorum - types, protocol, memory security, config"
+readme = "../../README.md"
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }
