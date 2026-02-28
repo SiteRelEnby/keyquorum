@@ -14,7 +14,7 @@ Built for unlocking LUKS partitions, but works with anything that takes a key on
 ## Install
 
 ```bash
-cargo install keyquorum --version 0.1.0-alpha.1
+cargo install keyquorum keyquorum-split
 ```
 
 Or build from source:
