@@ -4,43 +4,42 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use keyquorum_core::protocol::{ActionResult, ClientMessage, DaemonMessage};
 use keyquorum_core::types::ShareSubmission;
 
-pub async fn run(share_arg: Option<String>, user: Option<String>, socket: String) -> Result<()> {
-    // Get share data from arg or stdin
-    let share_input = match share_arg {
-        Some(s) => s.trim().to_string(),
-        None => {
+pub async fn run(user: Option<String>, socket: String) -> Result<()> {
+    // Read share from stdin (pipe or interactive)
+    let share_input = {
+        if std::io::IsTerminal::is_terminal(&std::io::stdin()) {
             eprintln!("Enter share (then press Enter twice, or Ctrl+D):");
-            let mut buf = String::new();
-            let mut saw_content = false;
-            let mut in_envelope = false;
-            let mut saw_envelope_blank = false;
-            loop {
-                let mut line = String::new();
-                let n = std::io::stdin().read_line(&mut line)?;
-                if n == 0 {
-                    break; // EOF (Ctrl+D or pipe ended)
-                }
-                let trimmed = line.trim();
-                if trimmed.starts_with("KEYQUORUM-SHARE-") {
-                    in_envelope = true;
-                }
-                if trimmed.is_empty() {
-                    if in_envelope && !saw_envelope_blank {
-                        // Blank line inside PEM envelope separates headers from payload
-                        saw_envelope_blank = true;
-                        buf.push_str(&line);
-                        continue;
-                    }
-                    if saw_content {
-                        break; // blank line after content = done
-                    }
-                    continue; // skip leading blank lines
-                }
-                saw_content = true;
-                buf.push_str(&line);
-            }
-            buf.trim().to_string()
         }
+        let mut buf = String::new();
+        let mut saw_content = false;
+        let mut in_envelope = false;
+        let mut saw_envelope_blank = false;
+        loop {
+            let mut line = String::new();
+            let n = std::io::stdin().read_line(&mut line)?;
+            if n == 0 {
+                break; // EOF (Ctrl+D or pipe ended)
+            }
+            let trimmed = line.trim();
+            if trimmed.starts_with("KEYQUORUM-SHARE-") {
+                in_envelope = true;
+            }
+            if trimmed.is_empty() {
+                if in_envelope && !saw_envelope_blank {
+                    // Blank line inside PEM envelope separates headers from payload
+                    saw_envelope_blank = true;
+                    buf.push_str(&line);
+                    continue;
+                }
+                if saw_content {
+                    break; // blank line after content = done
+                }
+                continue; // skip leading blank lines
+            }
+            saw_content = true;
+            buf.push_str(&line);
+        }
+        buf.trim().to_string()
     };
 
     if share_input.is_empty() {

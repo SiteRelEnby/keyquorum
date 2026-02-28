@@ -105,10 +105,10 @@ echo "Daemon ready"
 
 # Submit shares
 echo "--- Submitting shares ---"
-SUBMIT1=$("$KQ" submit -s "$(cat "$WORK/shares/share-1.txt")" -u alice --socket "$WORK/kq.sock" 2>&1)
+SUBMIT1=$("$KQ" submit -u alice --socket "$WORK/kq.sock" < "$WORK/shares/share-1.txt" 2>&1)
 echo "Share 1: $SUBMIT1"
 
-SUBMIT2=$("$KQ" submit -s "$(cat "$WORK/shares/share-2.txt")" -u bob --socket "$WORK/kq.sock" 2>&1)
+SUBMIT2=$("$KQ" submit -u bob --socket "$WORK/kq.sock" < "$WORK/shares/share-2.txt" 2>&1)
 echo "Share 2: $SUBMIT2"
 
 # Give cryptsetup a moment to finish

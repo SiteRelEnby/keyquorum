@@ -29,11 +29,11 @@ enum Commands {
         #[arg(long)]
         no_strict_hardening: bool,
     },
-    /// Submit a share to the running daemon
+    /// Submit a share to the running daemon.
+    /// Share data is always read from stdin (pipe a file or type interactively).
+    /// Shares are never accepted as command-line arguments to avoid exposure
+    /// via process table (/proc, ps) and shell history.
     Submit {
-        /// Share data (PEM envelope, bare V1, or raw base64/base32). If omitted, reads from stdin.
-        #[arg(short, long)]
-        share: Option<String>,
         /// Your identifier (optional, for participation logging)
         #[arg(short = 'u', long)]
         user: Option<String>,
@@ -78,13 +78,12 @@ async fn main() -> anyhow::Result<()> {
             no_strict_hardening,
         } => daemon::run(config, lockdown, no_strict_hardening).await,
         Commands::Submit {
-            share,
             user,
             socket,
             config,
         } => {
             let socket = resolve_socket(socket, config)?;
-            client::submit::run(share, user, socket).await
+            client::submit::run(user, socket).await
         }
         Commands::Status { socket, config } => {
             let socket = resolve_socket(socket, config)?;

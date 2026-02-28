@@ -72,15 +72,17 @@ keyquorum daemon -c /etc/keyquorum/config.toml
 Each participant SSHes in and submits their share:
 
 ```bash
-# Pass a share directly (PEM envelope, bare V1, or raw base64/base32)
-keyquorum submit -s "$(cat share-1.txt)" -c /etc/keyquorum/config.toml
-
-# Or pipe from stdin (supports multiline PEM envelopes)
+# Pipe a share file (PEM envelope, bare V1, or raw base64/base32)
 keyquorum submit -c /etc/keyquorum/config.toml < share-1.txt
+
+# Or type/paste interactively (press Enter twice or Ctrl+D to finish)
+keyquorum submit -c /etc/keyquorum/config.toml
 
 # Check progress
 keyquorum status -c /etc/keyquorum/config.toml
 ```
+
+Shares are always read from stdin — never as command-line arguments — to avoid exposure via the process table (`/proc`, `ps`) and shell history.
 
 When the threshold is reached, the secret is reconstructed and the configured action runs automatically. All shares are wiped from memory immediately after.
 
@@ -305,10 +307,11 @@ Options:
 ```
 
 **`keyquorum submit`**
+
+Reads share data from stdin (pipe or interactive). Supports PEM envelopes, bare V1, and raw base64/base32.
+
 ```
 Options:
-  -s, --share <SHARE>    Share data (PEM envelope, bare V1, or raw base64/base32).
-                         If omitted, reads from stdin
   -u, --user <USER>      Your identifier (optional, for participation logging)
       --socket <SOCKET>  Socket path or tcp://host:port (overrides config)
   -c, --config <CONFIG>  Path to config file (reads socket_path from it)

@@ -88,8 +88,8 @@ echo -n "$SECRET" | "$KQ_SPLIT" -n 3 -k 2 --no-strict-hardening -o files -d "$WO
 DAEMON_PID=$(start_daemon "$WORK/basic.toml" "$WORK/basic.stdout")
 wait_for_socket "$SOCK"
 
-"$KQ" submit -s "$(cat "$WORK/basic-shares/share-1.txt")" --socket "$SOCK" 2>"$WORK/basic-sub1.err"
-SUBMIT2=$("$KQ" submit -s "$(cat "$WORK/basic-shares/share-2.txt")" --socket "$SOCK" 2>&1 || true)
+"$KQ" submit --socket "$SOCK" < "$WORK/basic-shares/share-1.txt" 2>"$WORK/basic-sub1.err"
+SUBMIT2=$("$KQ" submit --socket "$SOCK" < "$WORK/basic-shares/share-2.txt" 2>&1 || true)
 
 # Give daemon a moment to write stdout
 sleep 0.2
@@ -119,7 +119,7 @@ echo -n "status-test" | "$KQ_SPLIT" -n 3 -k 2 --no-strict-hardening -o files -d 
 DAEMON_PID=$(start_daemon "$WORK/status.toml" "$WORK/status.stdout")
 wait_for_socket "$SOCK"
 
-"$KQ" submit -s "$(cat "$WORK/status-shares/share-1.txt")" --socket "$SOCK" 2>/dev/null
+"$KQ" submit --socket "$SOCK" < "$WORK/status-shares/share-1.txt" 2>/dev/null
 
 STATUS=$("$KQ" status --socket "$SOCK" 2>&1 || true)
 
@@ -143,8 +143,8 @@ echo -n "$SECRET" | "$KQ_SPLIT" -n 3 -k 2 --no-strict-hardening --bare --encodin
 DAEMON_PID=$(start_daemon "$WORK/base32.toml" "$WORK/base32.stdout")
 wait_for_socket "$SOCK"
 
-"$KQ" submit -s "$(cat "$WORK/base32-shares/share-1.txt")" --socket "$SOCK" 2>/dev/null
-"$KQ" submit -s "$(cat "$WORK/base32-shares/share-2.txt")" --socket "$SOCK" 2>/dev/null
+"$KQ" submit --socket "$SOCK" < "$WORK/base32-shares/share-1.txt" 2>/dev/null
+"$KQ" submit --socket "$SOCK" < "$WORK/base32-shares/share-2.txt" 2>/dev/null
 
 sleep 0.2
 
@@ -180,9 +180,9 @@ DAEMON_PID=$(start_daemon "$WORK/retry.toml" "$WORK/retry.stdout")
 wait_for_socket "$SOCK"
 
 # Submit corrupted share first, then two valid ones
-"$KQ" submit -s "$(cat "$WORK/retry-shares/share-1.txt")" --socket "$SOCK" 2>/dev/null || true
-"$KQ" submit -s "$(cat "$WORK/retry-shares/share-2.txt")" --socket "$SOCK" 2>/dev/null || true
-SUBMIT3=$("$KQ" submit -s "$(cat "$WORK/retry-shares/share-3.txt")" --socket "$SOCK" 2>&1 || true)
+"$KQ" submit --socket "$SOCK" < "$WORK/retry-shares/share-1.txt" 2>/dev/null || true
+"$KQ" submit --socket "$SOCK" < "$WORK/retry-shares/share-2.txt" 2>/dev/null || true
+SUBMIT3=$("$KQ" submit --socket "$SOCK" < "$WORK/retry-shares/share-3.txt" 2>&1 || true)
 
 sleep 0.2
 
@@ -205,7 +205,7 @@ echo -n "meta-test" | "$KQ_SPLIT" -n 3 -k 2 --no-strict-hardening --no-metadata 
 DAEMON_PID=$(start_daemon "$WORK/meta.toml" "$WORK/meta.stdout")
 wait_for_socket "$SOCK"
 
-SUBMIT=$("$KQ" submit -s "$(cat "$WORK/meta-shares/share-1.txt")" --socket "$SOCK" 2>&1 || true)
+SUBMIT=$("$KQ" submit --socket "$SOCK" < "$WORK/meta-shares/share-1.txt" 2>&1 || true)
 
 if echo "$SUBMIT" | grep -qi "rejected\|metadata"; then
     pass "require_metadata rejected share without metadata"
@@ -256,7 +256,7 @@ if [ "$(id -u)" -ne 0 ]; then
     PIDS+=("$STRICT_PID")
     wait_for_socket "$SOCK"
 
-    SUBMIT=$("$KQ" submit -s "$(cat "$WORK/strict-shares/share-1.txt")" --socket "$SOCK" 2>&1 || true)
+    SUBMIT=$("$KQ" submit --socket "$SOCK" < "$WORK/strict-shares/share-1.txt" 2>&1 || true)
 
     if echo "$SUBMIT" | grep -qi "strict_hardening\|rejected"; then
         pass "strict_hardening rejected share when mlock fails"
@@ -285,8 +285,8 @@ if [ "$(id -u)" -ne 0 ]; then
     PIDS+=("$NOSTRICT_PID")
     wait_for_socket "$SOCK"
 
-    SUBMIT=$("$KQ" submit -s "$(cat "$WORK/nostrict-shares/share-1.txt")" --socket "$SOCK" 2>&1 || true)
-    "$KQ" submit -s "$(cat "$WORK/nostrict-shares/share-2.txt")" --socket "$SOCK" 2>/dev/null || true
+    SUBMIT=$("$KQ" submit --socket "$SOCK" < "$WORK/nostrict-shares/share-1.txt" 2>&1 || true)
+    "$KQ" submit --socket "$SOCK" < "$WORK/nostrict-shares/share-2.txt" 2>/dev/null || true
 
     sleep 0.2
 
