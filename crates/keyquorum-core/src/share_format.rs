@@ -96,6 +96,9 @@ pub struct ParsedShare {
     /// Whether the input was a PEM envelope.
     #[zeroize(skip)]
     pub had_envelope: bool,
+    /// Whether the payload was extracted from a malformed/partial envelope.
+    #[zeroize(skip)]
+    pub malformed_envelope: bool,
 }
 
 #[derive(Debug, Error)]
@@ -156,6 +159,7 @@ pub fn decode_payload(bytes: &[u8]) -> Result<ParsedShare, ShareFormatError> {
             crc32_verified: false,
             metadata: None,
             had_envelope: false,
+            malformed_envelope: false,
         });
     }
 
@@ -219,6 +223,7 @@ pub fn decode_payload(bytes: &[u8]) -> Result<ParsedShare, ShareFormatError> {
         crc32_verified,
         metadata: None,
         had_envelope: false,
+        malformed_envelope: false,
     })
 }
 
@@ -345,14 +350,71 @@ pub fn parse_share(input: &str) -> Result<ParsedShare, ShareFormatError> {
         return Err(ShareFormatError::Empty);
     }
 
-    // Check for PEM envelope
+    // Check for PEM envelope (possibly with leading junk like "Share 3 (index 5):" label)
     if trimmed.starts_with(ENVELOPE_MARKER) {
         return parse_envelope(trimmed);
     }
+    if let Some(pos) = trimmed.find(ENVELOPE_MARKER) {
+        return parse_envelope(trimmed[pos..].trim());
+    }
 
     // Bare format: smart decode (disambiguates base64 vs base32 using KQ magic)
-    let bytes = decode_bytes_smart(trimmed)?;
-    decode_payload(&bytes)
+    match decode_bytes_smart(trimmed) {
+        Ok(bytes) => decode_payload(&bytes),
+        Err(bare_err) => {
+            // Fallback: if input looks like a mangled envelope (has header-like lines),
+            // try to extract just the payload lines
+            if let Some(parsed) = try_extract_payload(trimmed) {
+                Ok(parsed)
+            } else {
+                Err(bare_err)
+            }
+        }
+    }
+}
+
+/// Try to extract a share payload from input that has orphaned envelope headers
+/// (marker or header lines deleted). Returns None if no payload found.
+fn try_extract_payload(input: &str) -> Option<ParsedShare> {
+    let has_headers = input
+        .lines()
+        .any(|l| {
+            let t = l.trim();
+            matches!(t.split_once(':'), Some((k, _)) if
+                matches!(k.trim(), "Share" | "Scheme" | "Integrity"))
+        });
+
+    if !has_headers {
+        return None;
+    }
+
+    // Extract non-header, non-blank lines as candidate payload
+    let payload: Vec<&str> = input
+        .lines()
+        .map(|l| l.trim())
+        .filter(|l| {
+            if l.is_empty() {
+                return false;
+            }
+            // Skip lines that look like envelope headers
+            if let Some((key, _)) = l.split_once(':') {
+                if matches!(key.trim(), "Share" | "Scheme" | "Integrity") {
+                    return false;
+                }
+            }
+            true
+        })
+        .collect();
+
+    if payload.is_empty() {
+        return None;
+    }
+
+    let joined = payload.join("");
+    let bytes = decode_bytes_smart(&joined).ok()?;
+    let mut parsed = decode_payload(&bytes).ok()?;
+    parsed.malformed_envelope = true;
+    Some(parsed)
 }
 
 /// Parse a PEM envelope.
@@ -976,5 +1038,65 @@ mod tests {
         assert!(parsed.crc32_verified);
         let meta = parsed.metadata.clone().unwrap();
         assert_eq!(meta.threshold, Some(2));
+    }
+
+    #[test]
+    fn parse_share_envelope_with_label_prefix() {
+        // User pastes the split stderr label along with the share
+        let data = sample_sharks_data();
+        let opts = ShareFormatOptions {
+            encoding: ShareEncoding::Base64,
+            include_crc32: true,
+            include_envelope: true,
+            include_metadata: true,
+            share_number: 3,
+            total_shares: 5,
+            threshold: 2,
+        };
+        let formatted = format_share(&data, &opts);
+        // Prepend the label that keyquorum-split writes to stderr
+        let with_label = format!("Share 3 (index 42):\n{}", formatted);
+        let parsed = parse_share(&with_label).unwrap();
+        assert_eq!(parsed.sharks_data, data);
+        assert!(parsed.had_envelope);
+        assert!(parsed.crc32_verified);
+    }
+
+    #[test]
+    fn parse_share_bare_with_leading_junk_no_envelope() {
+        // Leading junk without an envelope marker should NOT be silently accepted
+        let data = sample_sharks_data();
+        let binary = encode_v1(&data, true);
+        let encoded = encode_bytes(&binary, ShareEncoding::Base64);
+        let with_junk = format!("some garbage\n{}", encoded);
+        // This should fail because the junk isn't a valid envelope and the
+        // whole string isn't valid base64
+        assert!(parse_share(&with_junk).is_err());
+    }
+
+    #[test]
+    fn parse_share_mangled_envelope_missing_marker() {
+        // Envelope with marker and Share header deleted (common copy-paste error)
+        let data = sample_sharks_data();
+        let binary = encode_v1(&data, true);
+        let encoded = encode_bytes(&binary, ShareEncoding::Base64);
+        let mangled = format!("Scheme: shamir-gf256\nIntegrity: crc32\n\n{}", encoded);
+        let parsed = parse_share(&mangled).unwrap();
+        assert_eq!(parsed.sharks_data, data);
+        assert!(parsed.malformed_envelope);
+        assert!(!parsed.had_envelope);
+        assert!(parsed.metadata.is_none());
+    }
+
+    #[test]
+    fn parse_share_mangled_envelope_only_payload_and_headers() {
+        // Just Integrity header + payload, no marker, no blank separator
+        let data = sample_sharks_data();
+        let binary = encode_v1(&data, true);
+        let encoded = encode_bytes(&binary, ShareEncoding::Base64);
+        let mangled = format!("Integrity: crc32\n{}", encoded);
+        let parsed = parse_share(&mangled).unwrap();
+        assert_eq!(parsed.sharks_data, data);
+        assert!(parsed.malformed_envelope);
     }
 }

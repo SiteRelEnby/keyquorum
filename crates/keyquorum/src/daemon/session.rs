@@ -115,6 +115,17 @@ impl Session {
             }
         };
 
+        if parsed.malformed_envelope {
+            if self.log_participation {
+                warn!(
+                    user = share.submitted_by.as_deref().unwrap_or("anonymous"),
+                    "share accepted from malformed envelope (missing marker or headers)"
+                );
+            } else {
+                warn!("share accepted from malformed envelope (missing marker or headers)");
+            }
+        }
+
         // Validate metadata if require_metadata is enabled
         if self.config.require_metadata {
             if !parsed.had_envelope || parsed.metadata.is_none() {

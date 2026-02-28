@@ -9,9 +9,40 @@ pub async fn run(share_arg: Option<String>, user: Option<String>, socket: String
     let share_input = match share_arg {
         Some(s) => s.trim().to_string(),
         None => {
-            eprintln!("Enter share:");
+            eprintln!("Enter share (then press Enter twice, or Ctrl+D):");
             let mut buf = String::new();
-            std::io::Read::read_to_string(&mut std::io::stdin(), &mut buf)?;
+            let mut saw_content = false;
+            let mut in_envelope = false;
+            let mut saw_envelope_blank = false;
+            loop {
+                let mut line = String::new();
+                let n = std::io::stdin().read_line(&mut line)?;
+                if n == 0 {
+                    break; // EOF (Ctrl+D or pipe ended)
+                }
+                let trimmed = line.trim();
+                if trimmed.starts_with("KEYQUORUM-SHARE-") {
+                    in_envelope = true;
+                }
+                if trimmed.is_empty() {
+                    if in_envelope && !saw_envelope_blank {
+                        // Blank line inside PEM envelope separates headers from payload
+                        saw_envelope_blank = true;
+                        buf.push_str(&line);
+                        continue;
+                    }
+                    if saw_content {
+                        break; // blank line after content = done
+                    }
+                    continue; // skip leading blank lines
+                }
+                saw_content = true;
+                buf.push_str(&line);
+                // If we already read the payload after envelope blank, we're done
+                if saw_envelope_blank {
+                    break;
+                }
+            }
             buf.trim().to_string()
         }
     };
@@ -23,6 +54,12 @@ pub async fn run(share_arg: Option<String>, user: Option<String>, socket: String
     // Parse the share (auto-detects format: PEM envelope, bare v1, legacy base64/base32)
     let parsed = keyquorum_core::share_format::parse_share(&share_input)
         .map_err(|e| anyhow::anyhow!("invalid share: {}", e))?;
+
+    if parsed.malformed_envelope {
+        eprintln!(
+            "warning: share extracted from malformed envelope (missing marker or headers)"
+        );
+    }
 
     let index = parsed.index;
 
