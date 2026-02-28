@@ -1,5 +1,9 @@
 # keyquorum
 
+[![CI](https://github.com/SiteRelEnby/keyquorum/actions/workflows/ci.yml/badge.svg)](https://github.com/SiteRelEnby/keyquorum/actions/workflows/ci.yml)
+[![crates.io](https://img.shields.io/crates/v/keyquorum.svg)](https://crates.io/crates/keyquorum)
+[![License: Apache-2.0](https://img.shields.io/crates/l/keyquorum.svg)](https://github.com/SiteRelEnby/keyquorum/blob/main/LICENSE)
+
 Shamir secret sharing daemon for distributed teams. Split a secret into shares, distribute them to team members, and reconstruct the secret only when a quorum submits their shares. Nobody ever handles someone else's share or sees the reconstructed key. Shares implemented with [sharks](https://github.com/c0dearm/sharks).
 
 Built for unlocking LUKS partitions, but works with anything that takes a key on stdin. Other things may be supported in the future.
