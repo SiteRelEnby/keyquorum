@@ -1,11 +1,13 @@
 use anyhow::{bail, Result};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use zeroize::Zeroize;
 
 use keyquorum_core::protocol::{ActionResult, ClientMessage, DaemonMessage};
 use keyquorum_core::types::ShareSubmission;
 
 pub async fn run(user: Option<String>, socket: String) -> Result<()> {
-    // Read share from stdin (pipe or interactive)
+    // Read share from stdin (pipe or interactive).
+    // share_input is zeroized at end of function to avoid lingering in memory.
     let share_input = {
         if std::io::IsTerminal::is_terminal(&std::io::stdin()) {
             eprintln!("Enter share (then press Enter twice, or Ctrl+D):");
@@ -63,25 +65,32 @@ pub async fn run(user: Option<String>, socket: String) -> Result<()> {
         bail!("invalid share data");
     }
 
-    // Build the message — send the original input string so the daemon
-    // can do its own full parsing (including metadata validation)
-    let msg = ClientMessage::SubmitShare {
-        share: ShareSubmission {
-            index,
-            data: share_input,
-            submitted_by: user,
-        },
+    // Build and serialize the message. share_input is moved into
+    // ShareSubmission (which has ZeroizeOnDrop), so it's zeroized when
+    // msg drops at the end of this block. The serialized json buffer
+    // still contains the share data and is zeroized after sending.
+    let mut json = {
+        let msg = ClientMessage::SubmitShare {
+            share: ShareSubmission {
+                index,
+                data: share_input,
+                submitted_by: user,
+            },
+        };
+        let mut j = serde_json::to_string(&msg)?;
+        j.push('\n');
+        j
+        // msg drops here → ShareSubmission.data is zeroized
     };
 
     // Connect to daemon
     let conn = super::connect(&socket).await?;
     let (reader, mut writer) = conn.split();
 
-    // Send the message
-    let mut json = serde_json::to_string(&msg)?;
-    json.push('\n');
+    // Send the message, then zeroize the serialized buffer
     writer.write_all(json.as_bytes()).await?;
     writer.flush().await?;
+    json.zeroize();
 
     // Read response
     let mut lines = BufReader::new(reader).lines();

@@ -4,7 +4,7 @@ use keyquorum_core::config::ActionConfig;
 use keyquorum_core::protocol::ActionResult;
 use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
-use tracing::info;
+use tracing::{debug, info};
 
 /// Execute the configured action with the reconstructed secret.
 pub async fn execute(config: &ActionConfig, secret: &[u8]) -> ActionResult {
@@ -47,13 +47,16 @@ async fn luks_unlock(device: &str, name: &str, secret: &[u8]) -> ActionResult {
         Ok(output) if output.status.success() => ActionResult::Success {
             message: format!("LUKS device {} unlocked as {}", device, name),
         },
-        Ok(output) => ActionResult::Failure {
-            message: format!(
-                "cryptsetup failed (exit {}): {}",
-                output.status,
-                String::from_utf8_lossy(&output.stderr)
-            ),
-        },
+        Ok(output) => {
+            debug!(
+                stderr = %String::from_utf8_lossy(&output.stderr),
+                exit_code = %output.status,
+                "cryptsetup stderr (not sent to client)"
+            );
+            ActionResult::Failure {
+                message: format!("cryptsetup failed (exit {})", output.status),
+            }
+        }
         Err(e) => ActionResult::Failure {
             message: format!("Failed to wait for cryptsetup: {}", e),
         },
@@ -106,14 +109,17 @@ async fn run_command(program: &str, args: &[String], secret: &[u8]) -> ActionRes
         Ok(output) if output.status.success() => ActionResult::Success {
             message: format!("Command {} completed successfully", program,),
         },
-        Ok(output) => ActionResult::Failure {
-            message: format!(
-                "{} failed (exit {}): {}",
-                program,
-                output.status,
-                String::from_utf8_lossy(&output.stderr)
-            ),
-        },
+        Ok(output) => {
+            debug!(
+                program = program,
+                stderr = %String::from_utf8_lossy(&output.stderr),
+                exit_code = %output.status,
+                "command stderr (not sent to client)"
+            );
+            ActionResult::Failure {
+                message: format!("{} failed (exit {})", program, output.status),
+            }
+        }
         Err(e) => ActionResult::Failure {
             message: format!("Failed to wait for {}: {}", program, e),
         },

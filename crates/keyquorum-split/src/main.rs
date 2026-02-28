@@ -191,12 +191,14 @@ fn make_format_opts(cli: &Cli, encoding: ShareEncoding, share_number: u8) -> Sha
 
 fn output_stdout(shares: &[sharks::Share], cli: &Cli, encoding: ShareEncoding) {
     for (i, share) in shares.iter().enumerate() {
-        let sharks_data: Vec<u8> = Vec::from(share);
+        let mut sharks_data: Vec<u8> = Vec::from(share);
         let index = sharks_data[0];
         let opts = make_format_opts(cli, encoding, (i + 1) as u8);
-        let formatted = share_format::format_share(&sharks_data, &opts);
+        let mut formatted = share_format::format_share(&sharks_data, &opts);
         eprintln!("Share {} (index {}):", i + 1, index);
         println!("{}", formatted);
+        sharks_data.zeroize();
+        formatted.zeroize();
     }
 }
 
@@ -211,12 +213,16 @@ fn output_files(
     })?;
 
     for (i, share) in shares.iter().enumerate() {
-        let sharks_data: Vec<u8> = Vec::from(share);
+        let mut sharks_data: Vec<u8> = Vec::from(share);
         let index = sharks_data[0];
         let opts = make_format_opts(cli, encoding, (i + 1) as u8);
-        let formatted = share_format::format_share(&sharks_data, &opts);
+        let mut formatted = share_format::format_share(&sharks_data, &opts);
         let filename = dir.join(format!("share-{}.txt", i + 1));
-        std::fs::write(&filename, format!("{}\n", formatted)).map_err(|e| {
+        let write_result =
+            std::fs::write(&filename, format!("{}\n", formatted));
+        sharks_data.zeroize();
+        formatted.zeroize();
+        write_result.map_err(|e| {
             anyhow::anyhow!("failed to write {}: {}", filename.display(), e)
         })?;
         eprintln!(
