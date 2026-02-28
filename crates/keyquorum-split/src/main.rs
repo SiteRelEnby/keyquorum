@@ -82,6 +82,7 @@ enum Encoding {
 }
 
 fn main() -> Result<()> {
+    keyquorum_core::memory::warn_if_not_linux();
     keyquorum_core::memory::harden_process()?;
 
     let cli = Cli::parse();

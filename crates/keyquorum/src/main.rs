@@ -70,6 +70,7 @@ fn resolve_socket(socket: Option<String>, config: Option<PathBuf>) -> anyhow::Re
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    keyquorum_core::memory::warn_if_not_linux();
     let cli = Cli::parse();
     match cli.command {
         Commands::Daemon {

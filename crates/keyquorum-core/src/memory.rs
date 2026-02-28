@@ -119,6 +119,16 @@ pub fn harden_process() -> io::Result<()> {
     Ok(())
 }
 
+/// Print a warning on non-Linux platforms where security features are degraded.
+pub fn warn_if_not_linux() {
+    #[cfg(not(target_os = "linux"))]
+    eprintln!(
+        "WARNING: macOS/non-Linux platform detected. Memory hardening (DONTFORK, \
+         DONTDUMP, prctl) is unavailable. This best-effort build is experimental \
+         and untested by the project maintainers, and may not be suitable for production."
+    );
+}
+
 fn page_size() -> usize {
     unsafe { libc::sysconf(libc::_SC_PAGESIZE) as usize }
 }
