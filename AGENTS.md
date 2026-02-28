@@ -47,7 +47,7 @@ New features should be additive. New config fields must have sensible defaults t
 
 Do not implement Feldman VSS, Pedersen VSS, or other verifiable secret sharing schemes as wrappers around the existing `sharks` Shamir implementation. These schemes have fundamentally different share structures, verification mechanisms, and security properties. If VSS support is added, it should be a separate scheme implementation (likely via `vsss-rs`), selectable via a `Scheme:` header in the share format, not a bolt-on.
 
-Similarly, do not implement custom cryptographic constructions. Use established libraries (`blake3`, `sharks`, `age`, etc.). If you think you need custom crypto, you're wrong.
+Similarly, do not implement custom cryptographic constructions. Use established libraries (`blake3`, `sharks`, `age`, etc.). If you think you need custom crypto, you're wrong. [This includes attempting novel constructions using 'safe' primitives from widely implemented libraries](https://soatok.blog/2025/01/31/hell-is-overconfident-developers-writing-encryption-code/).
 
 ### Test coverage
 

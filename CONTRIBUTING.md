@@ -32,7 +32,7 @@ This is a security-critical tool that protects real secrets. Please read:
 ## What We'll Push Back On
 
 - Breaking changes to the V1 share format, NDJSON protocol, config fields, or CLI args
-- Custom cryptographic constructions (use established libraries)
+- Custom cryptographic constructions (use established libraries). [This includes novel cryptographic constructions using 'safe' primitives from libraries](https://soatok.blog/2025/01/31/hell-is-overconfident-developers-writing-encryption-code/).
 - Layering verification schemes on top of Shamir instead of implementing them properly (see AGENTS.md)
 - New dependencies without clear justification
 - Changes that weaken the memory safety model
