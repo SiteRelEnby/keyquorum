@@ -1,6 +1,6 @@
 [package]
 name = "keyquorum"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 license = "Apache-2.0"
 repository = "https://github.com/SiteRelEnby/keyquorum"
@@ -8,7 +8,7 @@ description = "Shamir secret sharing daemon for distributed key quorum"
 readme = "../../README.md"
 
 [dependencies]
-keyquorum-core = { version = "0.1.0", path = "../keyquorum-core" }
+keyquorum-core = { version = "0.1.1", path = "../keyquorum-core" }
 clap = { version = "4", features = ["derive"] }
 tokio = { version = "1", features = ["full"] }
 tracing = "0.1"

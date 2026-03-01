@@ -1,6 +1,6 @@
 [package]
 name = "keyquorum-split"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 license = "Apache-2.0"
 repository = "https://github.com/SiteRelEnby/keyquorum"
@@ -8,7 +8,7 @@ description = "Split a secret into Shamir shares for use with keyquorum"
 readme = "../../README.md"
 
 [dependencies]
-keyquorum-core = { version = "0.1.0", path = "../keyquorum-core" }
+keyquorum-core = { version = "0.1.1", path = "../keyquorum-core" }
 clap = { version = "4", features = ["derive"] }
 anyhow = "1"
 zeroize = { version = "1", features = ["zeroize_derive"] }
