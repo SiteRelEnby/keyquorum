@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+- Age-encrypted share output: `--output age --recipients <file>` encrypts each share to a specific recipient's age public key before writing to disk. The split operator never sees plaintext shares. One `age1...` key per line in the recipients file (line order = share order). In lockdown mode, recipient count must exactly match share count.
+- `--armor` / `--armour` flag for ASCII-armored age output (`.age.txt` files), useful for text-based channels (Signal, email, etc.)
+
 ## [0.1.1] - 2025-06-14
 
 ### Fixed

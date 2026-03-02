@@ -42,6 +42,30 @@ By default, `keyquorum-split` embeds a blake3 verification checksum in the secre
 
 Distribute each share to its holder. The split operator should delete their copy.
 
+### Encrypting shares to recipients
+
+For distributed teams where the split operator should never see plaintext shares:
+
+```bash
+# Create a recipients file (one age public key per line)
+cat > recipients.txt << 'EOF'
+# Alice
+age1ql3z7hjy54pw3hyww5ayyfg7zqgvc7w3j2elw8zmrj2kg5sfn9aqmcac8p
+# Bob
+age1xyz...
+# Carol
+age1abc...
+EOF
+
+# Generate encrypted shares (operator never sees plaintext)
+echo -n "my-secret-key" | keyquorum-split -n 3 -k 2 -o age --recipients recipients.txt -d ./shares/
+
+# Each recipient decrypts their share and submits:
+age -d -i identity.txt share-1.txt.age | keyquorum submit -c /etc/keyquorum/config.toml
+```
+
+Use `--armor` (or `--armour`) to produce ASCII-armored `.age.txt` files that can be pasted into text channels (Signal, email, etc.) instead of binary `.age` files.
+
 ### 2. Configure the daemon
 
 ```toml
@@ -293,7 +317,7 @@ This is a security-critical tool. The design assumes the host is trusted but par
 - **No participant authentication** — anyone with a valid share can submit (share-only trust model)
 - **Single session at a time** — one unlock operation at a time per daemon instance
 - **Metadata envelope is not signed** — PEM headers are convenience-only and can be forged. See [Metadata is not authenticated](#metadata-is-not-authenticated)
-- **Threat model does not currently protect against a malicious dealer** - there are mitigations planned (e.g. per-recipient asymmetric encryption of shares rather than plaintext), but these are not currently meaningfully implemented.
+- **Threat model does not fully protect against a malicious dealer** — `--output age` encrypts shares to recipients so the operator never sees plaintext, but this is defence-in-depth, not a cryptographic guarantee (the operator still generates the shares). VSS (verifiable secret sharing) is planned for a future version.
 
 ## CLI reference
 
@@ -342,8 +366,10 @@ Usage: keyquorum-split [OPTIONS] --shares <SHARES> --threshold <THRESHOLD>
 Options:
   -n, --shares <SHARES>        Total number of shares to generate (2-255)
   -k, --threshold <THRESHOLD>  Minimum shares needed to reconstruct (2-N)
-  -o, --output <OUTPUT>        Output mode: stdout (default) or files
-  -d, --dir <DIR>              Output directory for file-per-share mode
+  -o, --output <OUTPUT>        Output mode: stdout (default), files, or age
+  -d, --dir <DIR>              Output directory (required for files and age modes)
+      --recipients <FILE>      Age recipients file (required for age mode)
+      --armor                  ASCII-armor age output (.age.txt instead of .age)
       --lockdown               Lockdown mode: rejects stdout output
       --no-strict-hardening    Allow operation if memory protections fail
       --no-checksum            Do not embed blake3 verification checksum

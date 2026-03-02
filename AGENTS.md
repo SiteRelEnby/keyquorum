@@ -98,6 +98,19 @@ These are things that have actually caused bugs in this codebase:
 - Run `cargo test`, `cargo clippy`, and ideally `tests/e2e-stdout.sh` before submitting
 - If you're an AI agent: state that in the PR description. It's fine, just be transparent.
 
+## Changelog
+
+We use [Keep a Changelog](https://keepachangelog.com/) format in `CHANGELOG.md`. When adding features or fixing bugs, add an entry under `[Unreleased]` using the appropriate category:
+
+- **Added** — new features
+- **Changed** — changes to existing functionality
+- **Fixed** — bug fixes
+- **Security** — vulnerability fixes or security-relevant changes
+- **Removed** — removed features
+- **Deprecated** — soon-to-be-removed features
+
+Keep entries concise (one line each). Focus on what changed from the user's perspective, not implementation details.
+
 ## Build & Test
 
 ```bash

@@ -309,6 +309,110 @@ else
 fi
 
 # --------------------------------------------------------------------------
+echo "--- Test: age_encrypted_output ---"
+if ! command -v age &>/dev/null || ! command -v age-keygen &>/dev/null; then
+    echo "  SKIP: age_encrypted_output (age CLI not installed)"
+else
+    SECRET="age-encrypt-e2e-test"
+    SOCK="$WORK/age.sock"
+    write_config "$WORK/age.toml" "$SOCK" 2 3
+
+    # Generate 3 age keypairs
+    age-keygen -o "$WORK/age-key1.txt" 2>"$WORK/age-pub1.txt"
+    age-keygen -o "$WORK/age-key2.txt" 2>"$WORK/age-pub2.txt"
+    age-keygen -o "$WORK/age-key3.txt" 2>"$WORK/age-pub3.txt"
+
+    # Build recipients file from public keys
+    grep 'Public key:' "$WORK/age-pub1.txt" | awk '{print $3}' > "$WORK/age-recipients.txt"
+    grep 'Public key:' "$WORK/age-pub2.txt" | awk '{print $3}' >> "$WORK/age-recipients.txt"
+    grep 'Public key:' "$WORK/age-pub3.txt" | awk '{print $3}' >> "$WORK/age-recipients.txt"
+
+    # Generate age-encrypted shares
+    echo -n "$SECRET" | "$KQ_SPLIT" -n 3 -k 2 --no-strict-hardening \
+        -o age --recipients "$WORK/age-recipients.txt" -d "$WORK/age-shares/"
+
+    # Verify .age files exist
+    if [ -f "$WORK/age-shares/share-1.txt.age" ] && \
+       [ -f "$WORK/age-shares/share-2.txt.age" ] && \
+       [ -f "$WORK/age-shares/share-3.txt.age" ]; then
+        pass "age-encrypted share files created"
+    else
+        fail "age-encrypted share files missing"
+    fi
+
+    # Decrypt shares and submit to daemon
+    DAEMON_PID=$(start_daemon "$WORK/age.toml" "$WORK/age.stdout")
+    wait_for_socket "$SOCK"
+
+    age -d -i "$WORK/age-key1.txt" "$WORK/age-shares/share-1.txt.age" | \
+        "$KQ" submit --socket "$SOCK" 2>/dev/null
+    age -d -i "$WORK/age-key2.txt" "$WORK/age-shares/share-2.txt.age" | \
+        "$KQ" submit --socket "$SOCK" 2>/dev/null
+
+    sleep 0.2
+
+    if grep -q "$SECRET" "$WORK/age.stdout"; then
+        pass "age-encrypted shares decrypted and reconstructed"
+    else
+        fail "age-encrypted reconstruction failed"
+    fi
+
+    kill "$DAEMON_PID" 2>/dev/null || true
+    wait "$DAEMON_PID" 2>/dev/null || true
+fi
+
+# --------------------------------------------------------------------------
+echo "--- Test: age_armored_output ---"
+if ! command -v age &>/dev/null || ! command -v age-keygen &>/dev/null; then
+    echo "  SKIP: age_armored_output (age CLI not installed)"
+else
+    SECRET="age-armor-e2e-test"
+    SOCK="$WORK/armor.sock"
+    write_config "$WORK/armor.toml" "$SOCK" 2 3
+
+    # Reuse keypairs from previous test if available, otherwise generate
+    if [ ! -f "$WORK/age-key1.txt" ]; then
+        age-keygen -o "$WORK/age-key1.txt" 2>"$WORK/age-pub1.txt"
+        age-keygen -o "$WORK/age-key2.txt" 2>"$WORK/age-pub2.txt"
+        age-keygen -o "$WORK/age-key3.txt" 2>"$WORK/age-pub3.txt"
+        grep 'Public key:' "$WORK/age-pub1.txt" | awk '{print $3}' > "$WORK/age-recipients.txt"
+        grep 'Public key:' "$WORK/age-pub2.txt" | awk '{print $3}' >> "$WORK/age-recipients.txt"
+        grep 'Public key:' "$WORK/age-pub3.txt" | awk '{print $3}' >> "$WORK/age-recipients.txt"
+    fi
+
+    echo -n "$SECRET" | "$KQ_SPLIT" -n 3 -k 2 --no-strict-hardening \
+        -o age --recipients "$WORK/age-recipients.txt" --armor -d "$WORK/armor-shares/"
+
+    # Verify armored files exist and contain ASCII armor markers
+    if [ -f "$WORK/armor-shares/share-1.txt.age.txt" ] && \
+       grep -q "BEGIN AGE ENCRYPTED FILE" "$WORK/armor-shares/share-1.txt.age.txt"; then
+        pass "armored age share files created with correct markers"
+    else
+        fail "armored age share files missing or malformed"
+    fi
+
+    # Decrypt armored share and submit
+    DAEMON_PID=$(start_daemon "$WORK/armor.toml" "$WORK/armor.stdout")
+    wait_for_socket "$SOCK"
+
+    age -d -i "$WORK/age-key1.txt" "$WORK/armor-shares/share-1.txt.age.txt" | \
+        "$KQ" submit --socket "$SOCK" 2>/dev/null
+    age -d -i "$WORK/age-key2.txt" "$WORK/armor-shares/share-2.txt.age.txt" | \
+        "$KQ" submit --socket "$SOCK" 2>/dev/null
+
+    sleep 0.2
+
+    if grep -q "$SECRET" "$WORK/armor.stdout"; then
+        pass "armored age shares decrypted and reconstructed"
+    else
+        fail "armored age reconstruction failed"
+    fi
+
+    kill "$DAEMON_PID" 2>/dev/null || true
+    wait "$DAEMON_PID" 2>/dev/null || true
+fi
+
+# --------------------------------------------------------------------------
 echo ""
 echo "=== Results: $TESTS_PASSED passed, $TESTS_FAILED failed ==="
 
