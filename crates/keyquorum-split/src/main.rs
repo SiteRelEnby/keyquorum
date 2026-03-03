@@ -411,9 +411,12 @@ fn output_age(
         unencrypted_count,
     );
     if unencrypted_count == 0 {
-        eprintln!("Distribute each .age file to its holder. They decrypt with: age -d -i identity.txt share-N.txt.age");
+        eprintln!("Distribute each .age file to its holder.");
+        eprintln!("Recipients decrypt with: age -d -i identity.txt share-N.txt.age");
+        eprintln!("(age CLI: pip install age)");
     } else {
         eprintln!("Distribute each file to its holder, then delete this directory.");
+        eprintln!("Encrypted shares require the age CLI to decrypt: pip install age");
     }
 
     Ok(())
