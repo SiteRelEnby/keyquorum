@@ -71,6 +71,18 @@ struct Cli {
     /// Files get .age.txt extension instead of .age.
     #[arg(long, alias = "armour")]
     armor: bool,
+    /// Designate the last N generated shares as DURESS (canary) shares and
+    /// print their indices plus a ready-to-paste [session.duress] config
+    /// block (indices are deterministic 1..=N; this just saves you the
+    /// bookkeeping and surfaces the security warning below).
+    ///
+    /// SECURITY: a duress share is a real Shamir share of the same secret.
+    /// If you hand each participant a normal share AND a duress share, every
+    /// person then holds 2 of N shares, so an attacker needs only ceil(K/2)
+    /// people to collect K shares — roughly HALVING the people-collusion
+    /// threshold. See the README "Duress shares" section before using this.
+    #[arg(long, value_name = "N")]
+    duress: Option<u8>,
     // Future: --raw-shares for truly raw sharks bytes (no KQ prefix),
     // for interoperability with other Shamir tools.
 }
@@ -125,6 +137,25 @@ fn main() -> Result<()> {
 
     if cli.armor && !matches!(cli.output, OutputMode::Age) {
         bail!("--armor requires --output age");
+    }
+
+    if let Some(d) = cli.duress {
+        if d == 0 {
+            bail!("--duress must be at least 1 (omit the flag for no duress shares)");
+        }
+        // Leave at least `threshold` non-duress shares so an honest quorum can
+        // unlock using normal shares alone. duress > shares - threshold would
+        // force duress shares into every legitimate reconstruction.
+        if d > cli.shares - cli.threshold {
+            bail!(
+                "--duress {} leaves only {} normal share(s), but threshold is {}; \
+                 use at most {} duress shares (shares - threshold)",
+                d,
+                cli.shares - d,
+                cli.threshold,
+                cli.shares - cli.threshold
+            );
+        }
     }
 
     if cli.lockdown && matches!(cli.output, OutputMode::Stdout) {
@@ -235,11 +266,80 @@ fn main() -> Result<()> {
         OutputMode::Interactive => output_interactive(&shares, &cli, encoding)?,
     }
 
+    // Report duress shares. Indices are deterministic (blahaj assigns
+    // x-coordinates 1..=N in order), but emitting the exact config block and
+    // the security warning here removes a transcription footgun.
+    if let Some(d) = cli.duress {
+        let d = d as usize;
+        let duress_indices: Vec<u8> = shares[shares.len() - d..]
+            .iter()
+            .map(share_x_coord)
+            .collect();
+        let normal = cli.shares as usize - d;
+        let index_list = duress_indices
+            .iter()
+            .map(|i| i.to_string())
+            .collect::<Vec<_>>()
+            .join(", ");
+
+        eprintln!();
+        eprintln!("======================================================================");
+        eprintln!("DURESS SHARES");
+        eprintln!("======================================================================");
+        eprintln!(
+            "The last {} share(s) — share #{}..#{} — are duress shares.",
+            d,
+            normal + 1,
+            cli.shares
+        );
+        eprintln!("Their indices are: {}", index_list);
+        eprintln!();
+        eprintln!("Add to the daemon config:");
+        eprintln!();
+        eprintln!("    [session.duress]");
+        eprintln!("    indices = [{}]", index_list);
+        eprintln!("    mode = \"alert\"   # or \"poison\"");
+        eprintln!("    alert_program = \"/usr/local/bin/notify-security\"");
+        eprintln!();
+        eprintln!("!! SECURITY: each duress share is a REAL Shamir share of this secret.");
+        eprintln!("!! If you give each participant a normal share AND a duress share, every");
+        eprintln!(
+            "!! person then holds 2 of {} shares, so an attacker needs only ceil(K/2)",
+            cli.shares
+        );
+        eprintln!(
+            "!! = {} people (not {}) to collect a quorum of {} shares.",
+            cli.threshold.div_ceil(2),
+            cli.threshold,
+            cli.threshold
+        );
+        eprintln!("!! This roughly HALVES your people-collusion threshold. Choose -n/-k with");
+        eprintln!("!! that in mind. For poison mode, every participant needs their own");
+        eprintln!("!! distinct duress share, or coercion of a non-holder goes undetected.");
+        eprintln!("======================================================================");
+    }
+
     // Zeroize and unlock secret (in that order: Vec::zeroize() would clear
     // the Vec first, making the munlock a no-op on an empty slice)
     keyquorum_core::memory::wipe_and_unlock(&mut secret);
 
     Ok(())
+}
+
+/// The x-coordinate (index) of a share: the first byte of its serialization.
+fn share_x_coord(share: &blahaj::Share) -> u8 {
+    Vec::from(share)[0]
+}
+
+/// Label suffix marking share `i` (0-based) as duress, given the duress count.
+/// The last `duress_count` shares are duress. Empty for normal shares.
+fn duress_suffix(cli: &Cli, i: usize) -> &'static str {
+    let d = cli.duress.unwrap_or(0) as usize;
+    if d > 0 && i >= cli.shares as usize - d {
+        " [DURESS]"
+    } else {
+        ""
+    }
 }
 
 fn make_format_opts(cli: &Cli, encoding: ShareEncoding, share_number: u8) -> ShareFormatOptions {
@@ -260,7 +360,12 @@ fn output_stdout(shares: &[blahaj::Share], cli: &Cli, encoding: ShareEncoding) {
         let index = sharks_data[0];
         let opts = make_format_opts(cli, encoding, (i + 1) as u8);
         let mut formatted = share_format::format_share(&sharks_data, &opts);
-        eprintln!("Share {} (index {}):", i + 1, index);
+        eprintln!(
+            "Share {} (index {}):{}",
+            i + 1,
+            index,
+            duress_suffix(cli, i)
+        );
         println!("{}", formatted);
         sharks_data.zeroize();
         formatted.zeroize();
@@ -289,10 +394,11 @@ fn output_files(
         write_result
             .map_err(|e| anyhow::anyhow!("failed to write {}: {}", filename.display(), e))?;
         eprintln!(
-            "Share {} (index {}) written to {}",
+            "Share {} (index {}) written to {}{}",
             i + 1,
             index,
-            filename.display()
+            filename.display(),
+            duress_suffix(cli, i)
         );
     }
 
@@ -471,10 +577,11 @@ fn output_age(
                 .map_err(|e| anyhow::anyhow!("failed to write {}: {}", filename.display(), e))?;
 
             eprintln!(
-                "Share {} (index {}) encrypted and written to {}",
+                "Share {} (index {}) encrypted and written to {}{}",
                 i + 1,
                 index,
-                filename.display()
+                filename.display(),
+                duress_suffix(cli, i)
             );
         } else {
             // No recipient for this share — write unencrypted (warning already emitted)
@@ -488,10 +595,11 @@ fn output_age(
                 .map_err(|e| anyhow::anyhow!("failed to write {}: {}", filename.display(), e))?;
 
             eprintln!(
-                "Share {} (index {}) written UNENCRYPTED to {}",
+                "Share {} (index {}) written UNENCRYPTED to {}{}",
                 i + 1,
                 index,
-                filename.display()
+                filename.display(),
+                duress_suffix(cli, i)
             );
         }
     }

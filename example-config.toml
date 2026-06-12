@@ -83,6 +83,12 @@ timeout_secs = 1800
 # under duress, but security knows); mode = "poison" makes reconstruction
 # silently fail like a genuine bad-share failure (alert_program optional).
 # The alert program runs detached and receives no share or secret data.
+# Generate duress shares with: keyquorum-split --duress N (prints indices).
+# SECURITY: each duress share is a real Shamir share, so giving each holder a
+# normal + duress share means every person holds 2-of-N — an attacker needs
+# only ceil(K/2) people, roughly HALVING your people-collusion threshold.
+# Size -n/-k accordingly. For poison mode every participant needs their own
+# distinct duress share. See README "Duress shares".
 # [session.duress]
 # indices = [4, 5, 6]
 # mode = "alert"

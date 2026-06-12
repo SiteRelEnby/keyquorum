@@ -582,6 +582,68 @@ else
 fi
 
 # --------------------------------------------------------------------------
+echo "--- Test: duress_poison ---"
+SECRET="duress-poison-test"
+SOCK="$WORK/duress.sock"
+# 2-of-4 with --duress 2 → indices 3,4 are duress (deterministic 1..=N)
+write_config "$WORK/duress.toml" "$SOCK" 2 4 \
+    '[session.duress]
+indices = [3, 4]
+mode = "poison"'
+
+DSPLIT=$(echo -n "$SECRET" | "$KQ_SPLIT" -n 4 -k 2 --no-strict-hardening --duress 2 \
+    -o files -d "$WORK/duress-shares/" 2>&1)
+
+# Split must report the duress shares and the halving warning
+if echo "$DSPLIT" | grep -q "indices = \[3, 4\]" && echo "$DSPLIT" | grep -qi "HALVES"; then
+    pass "split --duress emits config block and security warning"
+else
+    fail "split --duress missing config/warning: $DSPLIT"
+fi
+
+DAEMON_PID=$(start_daemon "$WORK/duress.toml" "$WORK/duress.stdout")
+wait_for_socket "$SOCK"
+
+# Normal shares (1,2) reconstruct
+"$KQ" submit --socket "$SOCK" < "$WORK/duress-shares/share-1.txt" 2>/dev/null || true
+"$KQ" submit --socket "$SOCK" < "$WORK/duress-shares/share-2.txt" 2>/dev/null || true
+sleep 0.2
+if grep -q "$SECRET" "$WORK/duress.stdout"; then
+    pass "normal shares reconstruct (duress not triggered)"
+else
+    fail "normal shares failed to reconstruct"
+fi
+
+# A duress share (index 3) must poison: submit share-3 + share-1, expect failure
+: > "$WORK/duress.stdout"
+DZ_SUB=$("$KQ" submit --socket "$SOCK" < "$WORK/duress-shares/share-3.txt" 2>&1 || true)
+DZ_SUB2=$("$KQ" submit --socket "$SOCK" < "$WORK/duress-shares/share-1.txt" 2>&1 || true)
+sleep 0.2
+# The duress submission must look like a normal acceptance (indistinguishable)
+if echo "$DZ_SUB" | grep -qi "accepted"; then
+    pass "duress share accepted indistinguishably"
+else
+    fail "duress share did not look accepted: $DZ_SUB"
+fi
+# But reconstruction must NOT produce the secret
+if grep -q "$SECRET" "$WORK/duress.stdout"; then
+    fail "poison failed — secret was reconstructed with a duress share present"
+else
+    pass "poison mode prevented reconstruction with duress share"
+fi
+
+kill "$DAEMON_PID" 2>/dev/null || true
+wait "$DAEMON_PID" 2>/dev/null || true
+
+# Validation: --duress exceeding shares-threshold is rejected
+DZ_BAD=$(echo -n "x" | "$KQ_SPLIT" -n 4 -k 2 --no-strict-hardening --duress 3 -o files -d "$WORK/dzbad/" 2>&1 || true)
+if echo "$DZ_BAD" | grep -qi "at most 2 duress"; then
+    pass "split rejects too many duress shares"
+else
+    fail "split did not reject excess duress: $DZ_BAD"
+fi
+
+# --------------------------------------------------------------------------
 echo "--- Test: interactive_ceremony ---"
 if ! command -v script &>/dev/null; then
     echo "  SKIP: interactive_ceremony (script(1) not available for pty)"
