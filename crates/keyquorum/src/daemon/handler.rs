@@ -17,6 +17,7 @@ pub async fn handle_connection<R, W>(
     reader: R,
     mut writer: W,
     session_tx: mpsc::Sender<SessionCommand>,
+    peer: Option<String>,
 ) where
     R: AsyncRead + Unpin,
     W: AsyncWrite + Unpin,
@@ -64,6 +65,7 @@ pub async fn handle_connection<R, W>(
                 debug!(index = share.index, "received share submission");
                 SessionCommand::SubmitShare {
                     share,
+                    peer: peer.clone(),
                     respond_to: tx,
                 }
             }

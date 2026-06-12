@@ -110,10 +110,23 @@ async fn accept_unix_loop(
     loop {
         match listener.accept().await {
             Ok((stream, _addr)) => {
+                // SO_PEERCRED: kernel-verified identity of the connecting
+                // process. Unlike the client-supplied submitted_by field,
+                // this cannot be forged.
+                let peer = stream.peer_cred().ok().map(|cred| {
+                    format!(
+                        "uid={} gid={} pid={}",
+                        cred.uid(),
+                        cred.gid(),
+                        cred.pid()
+                            .map(|p| p.to_string())
+                            .unwrap_or_else(|| "?".to_string())
+                    )
+                });
                 let tx = session_tx.clone();
                 tokio::spawn(async move {
                     let (reader, writer) = tokio::io::split(stream);
-                    handler::handle_connection(reader, writer, tx).await;
+                    handler::handle_connection(reader, writer, tx, peer).await;
                 });
             }
             Err(e) => {
@@ -131,10 +144,11 @@ async fn accept_tcp_loop(
         match listener.accept().await {
             Ok((stream, addr)) => {
                 info!(addr = %addr, "accepted TCP connection");
+                let peer = Some(format!("tcp:{}", addr));
                 let tx = session_tx.clone();
                 tokio::spawn(async move {
                     let (reader, writer) = tokio::io::split(stream);
-                    handler::handle_connection(reader, writer, tx).await;
+                    handler::handle_connection(reader, writer, tx, peer).await;
                 });
             }
             Err(e) => {

@@ -328,7 +328,7 @@ This is a security-critical tool. The design assumes the host is trusted but par
 ## Limitations
 
 - **Not for boot volumes** — the daemon requires a running OS
-- **No participant authentication** — anyone with a valid share can submit (share-only trust model)
+- **No participant authentication** — anyone with a valid share can submit (share-only trust model). With `log_participation = true` the audit log does record the kernel-verified connecting identity (`SO_PEERCRED` uid/gid/pid on the Unix socket), which cannot be forged — but it is a log, not an access control.
 - **Single session at a time** — one unlock operation at a time per daemon instance
 - **Metadata envelope is not signed** — PEM headers are convenience-only and can be forged. See [Metadata is not authenticated](#metadata-is-not-authenticated)
 - **Threat model does not fully protect against a malicious dealer** — `--output age` encrypts shares to recipients so the operator never sees plaintext, but this is defence-in-depth, not a cryptographic guarantee (the operator still generates the shares). VSS (verifiable secret sharing) is planned for a future version.

@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - `pid_file` daemon config option is now implemented (was previously parsed but ignored)
 - SIGTERM is now handled for graceful shutdown (previously only SIGINT), so `systemctl stop` cleans up the socket and pid file
 - Envelope `Share:` header share numbers are now range-checked against `total_shares` when `require_metadata` is enabled
+- Participation logging (`log_participation = true`) now records the kernel-verified peer identity (`SO_PEERCRED` uid/gid/pid for Unix socket connections, remote address for TCP) alongside the client-claimed `submitted_by`. Unlike `submitted_by`, the peer field cannot be forged by the client.
 - Hardened systemd unit file (`contrib/systemd/keyquorum.service`): `LimitMEMLOCK=infinity`, `RuntimeDirectory=keyquorum`, `ProtectSystem=strict`, `MemoryDenyWriteExecute`, and related sandboxing on top of the daemon's own process hardening
 
 ### Changed

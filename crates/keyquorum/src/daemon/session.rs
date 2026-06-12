@@ -32,6 +32,10 @@ impl Drop for SecureShareData {
 pub enum SessionCommand {
     SubmitShare {
         share: ShareSubmission,
+        /// Kernel-verified peer identity (SO_PEERCRED for Unix sockets,
+        /// remote address for TCP). Unlike `share.submitted_by`, this
+        /// cannot be forged by the client.
+        peer: Option<String>,
         respond_to: oneshot::Sender<DaemonMessage>,
     },
     GetStatus {
@@ -96,7 +100,12 @@ impl Session {
             .map(|s| s + Duration::from_secs(self.config.timeout_secs))
     }
 
+    #[cfg(test)]
     fn submit_share(&mut self, share: ShareSubmission) -> DaemonMessage {
+        self.submit_share_from(share, None)
+    }
+
+    fn submit_share_from(&mut self, share: ShareSubmission, peer: Option<&str>) -> DaemonMessage {
         // Reject only mid-reconstruction. Terminal states (Completed, Failed,
         // TimedOut) hold the previous session's outcome for status queries;
         // a new share submitted in one of them starts a fresh session.
@@ -214,11 +223,14 @@ impl Session {
             }
         }
 
-        // Log participation if enabled (never log share data)
+        // Log participation if enabled (never log share data).
+        // `user` is the client-claimed identity; `peer` is kernel-verified
+        // (SO_PEERCRED on Unix sockets) and cannot be forged.
         if self.log_participation {
             info!(
                 index = actual_index,
                 user = share.submitted_by.as_deref().unwrap_or("anonymous"),
+                peer = peer.unwrap_or("unknown"),
                 "share submitted"
             );
         }
@@ -580,8 +592,8 @@ pub async fn run_session(
         tokio::select! {
             Some(cmd) = rx.recv() => {
                 match cmd {
-                    SessionCommand::SubmitShare { share, respond_to } => {
-                        let response = session.submit_share(share);
+                    SessionCommand::SubmitShare { share, peer, respond_to } => {
+                        let response = session.submit_share_from(share, peer.as_deref());
 
                         // If this share was rejected, send rejection immediately
                         if matches!(response, DaemonMessage::ShareRejected { .. }) {

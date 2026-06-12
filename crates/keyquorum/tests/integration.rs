@@ -82,7 +82,7 @@ impl TestDaemon {
                 let tx = session_tx.clone();
                 tokio::spawn(async move {
                     let (reader, writer) = tokio::io::split(stream);
-                    handle_connection(reader, writer, tx).await;
+                    handle_connection(reader, writer, tx, None).await;
                 });
             }
         });
@@ -497,7 +497,7 @@ impl TestDaemon {
                 let tx = session_tx.clone();
                 tokio::spawn(async move {
                     let (reader, writer) = tokio::io::split(stream);
-                    handle_connection(reader, writer, tx).await;
+                    handle_connection(reader, writer, tx, None).await;
                 });
             }
         });
