@@ -5,6 +5,9 @@ members = [
     "crates/keyquorum",
     "crates/keyquorum-split",
 ]
+# The fuzz crate builds with nightly + cargo-fuzz only; keep it out of the
+# workspace so cargo test / clippy / deny don't try to build it.
+exclude = ["fuzz"]
 
 [profile.release]
 opt-level = 2

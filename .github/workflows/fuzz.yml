@@ -1,0 +1,35 @@
+name: Fuzz
+
+on:
+  schedule:
+    # Weekly, Monday 06:00 UTC
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "crates/keyquorum-core/src/share_format.rs"
+      - "fuzz/**"
+
+jobs:
+  fuzz:
+    name: Fuzz share parser
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [parse_share, decode_payload]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: fuzz
+      - run: cargo install cargo-fuzz --locked
+      - name: Fuzz ${{ matrix.target }}
+        run: cargo +nightly fuzz run ${{ matrix.target }} -- -max_total_time=300
+      - name: Upload crash artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-artifacts-${{ matrix.target }}
+          path: fuzz/artifacts/

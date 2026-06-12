@@ -1,0 +1,29 @@
+[package]
+name = "keyquorum-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+keyquorum-core = { path = "../crates/keyquorum-core" }
+
+# parse_share/decode_payload accept attacker-controlled, pre-authentication
+# input from the daemon socket — exactly the surface worth fuzzing.
+
+[[bin]]
+name = "parse_share"
+path = "fuzz_targets/parse_share.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "decode_payload"
+path = "fuzz_targets/decode_payload.rs"
+test = false
+doc = false
+bench = false
