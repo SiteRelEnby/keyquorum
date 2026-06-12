@@ -1,0 +1,59 @@
+# systemd unit for the keyquorum daemon.
+#
+# Install:
+#   cp contrib/systemd/keyquorum.service /etc/systemd/system/
+#   mkdir -p /etc/keyquorum && cp example-config.toml /etc/keyquorum/config.toml
+#   systemctl daemon-reload && systemctl enable --now keyquorum
+#
+# The default config socket path (/run/keyquorum/keyquorum.sock) matches
+# RuntimeDirectory below. If you set pid_file, point it inside /run/keyquorum
+# too — most of the filesystem is read-only under ProtectSystem=strict.
+
+[Unit]
+Description=keyquorum Shamir secret sharing quorum daemon
+Documentation=https://github.com/SiteRelEnby/keyquorum
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/keyquorum daemon -c /etc/keyquorum/config.toml
+Restart=on-failure
+RestartSec=5
+
+# Creates /run/keyquorum (0750) for the socket; removed on stop
+RuntimeDirectory=keyquorum
+RuntimeDirectoryMode=0750
+
+# The daemon mlock()s every buffer holding share or secret material and
+# (by default, strict_hardening) refuses to operate if that fails.
+LimitMEMLOCK=infinity
+
+# Belt and braces: the daemon already sets PR_SET_DUMPABLE=0 and
+# PR_SET_NO_NEW_PRIVS itself; these provide defence in depth.
+LimitCORE=0
+NoNewPrivileges=yes
+
+# Sandboxing. Tested with the luks and command actions.
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+MemoryDenyWriteExecute=yes
+LockPersonality=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+
+# Deliberately NOT set:
+#   PrivateDevices=yes   — the luks action needs /dev (device-mapper).
+#                          Enable it if your action never touches devices.
+#   ProtectKernelLogs / CapabilityBoundingSet — cryptsetup needs broad
+#                          privileges (CAP_SYS_ADMIN for dm ioctls); tighten
+#                          per-deployment if you use a command action.
+
+[Install]
+WantedBy=multi-user.target

@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - `pid_file` daemon config option is now implemented (was previously parsed but ignored)
 - SIGTERM is now handled for graceful shutdown (previously only SIGINT), so `systemctl stop` cleans up the socket and pid file
 - Envelope `Share:` header share numbers are now range-checked against `total_shares` when `require_metadata` is enabled
+- Hardened systemd unit file (`contrib/systemd/keyquorum.service`): `LimitMEMLOCK=infinity`, `RuntimeDirectory=keyquorum`, `ProtectSystem=strict`, `MemoryDenyWriteExecute`, and related sandboxing on top of the daemon's own process hardening
 
 ### Changed
 - Terminal session states (`Completed`, `Failed`, `TimedOut`) are now held and visible via `status` until the next session starts, instead of resetting straight to `Idle`. Submitting a share while in a terminal state starts a fresh session (shares are still wiped at the transition, as before).

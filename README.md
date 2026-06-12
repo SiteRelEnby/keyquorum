@@ -26,6 +26,20 @@ cargo build --release
 
 **Platform support:** Linux is the primary and tested target. macOS builds are **highly experimental and untested** by the project maintainers — memory hardening features (DONTFORK, DONTDUMP, prctl) are Linux-only and are silently skipped on macOS. The maintainer does not have access to Apple hardware. macOS PRs are welcome but please do not open issues requesting Apple support.
 
+### Running as a systemd service
+
+A hardened unit file is provided in `contrib/systemd/`:
+
+```bash
+cp target/release/keyquorum /usr/local/bin/
+mkdir -p /etc/keyquorum && cp example-config.toml /etc/keyquorum/config.toml
+# edit /etc/keyquorum/config.toml for your deployment
+cp contrib/systemd/keyquorum.service /etc/systemd/system/
+systemctl daemon-reload && systemctl enable --now keyquorum
+```
+
+The unit sets `LimitMEMLOCK=infinity` (required by `strict_hardening`'s mlock guarantees), creates `/run/keyquorum` for the socket via `RuntimeDirectory`, and applies systemd sandboxing (`ProtectSystem=strict`, `MemoryDenyWriteExecute`, `PrivateTmp`, and friends) on top of the daemon's own process hardening. `PrivateDevices` is intentionally left off so the `luks` action can reach device-mapper — see the comments in the unit file if you want to tighten further for non-device actions. The daemon handles SIGTERM, so `systemctl stop` shuts down gracefully and cleans up the socket.
+
 ## Quick start
 
 ### 1. Generate shares
