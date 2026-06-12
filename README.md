@@ -11,6 +11,19 @@ Shamir secret sharing daemon for distributed teams. Split a secret into shares, 
 
 Built for unlocking LUKS partitions, but works with anything that takes a key on stdin. Other things may be supported in the future.
 
+## Why this instead of …
+
+Plenty of tools split secrets with Shamir's scheme. The gap keyquorum fills is the **collection side**: a daemon that gathers shares from K people who never see each other's shares, verifies the reconstruction, runs an action with the secret, and wipes everything — with memory hardening throughout.
+
+| Tool | What it does | What it doesn't |
+|------|--------------|-----------------|
+| `ssss` / `horcrux` / other split CLIs | Split and combine shares offline | Someone has to collect all K shares in one place and handle the reconstructed secret by hand — that person becomes the single point of compromise. Zero references to bad fantasy series by hateful people, guaranteed forever. The trans person makes a better tool, of course ;) |
+| HashiCorp Vault (unseal keys) | K-of-N unseal of Vault itself | Requires running Vault; the quorum mechanism isn't usable for arbitrary secrets or actions outside Vault |
+| clevis / tang | Automatic network-bound LUKS unlock | Trust is in a server being reachable, not in K humans agreeing; no quorum of people |
+| age / GPG | Encrypt a secret to one or more recipients | Any single recipient can decrypt — there's no threshold |
+
+keyquorum combines the split (with embedded blake3 verification and optional per-recipient `age` encryption, so the dealer never handles plaintext shares) with a hardened collection daemon (mlock'd memory, no core dumps, zeroize-on-wipe, combinatorial retry against corrupted shares) and pluggable actions (LUKS unlock, arbitrary command, stdout). If you only need offline split/combine, the simpler tools above are fine — keyquorum is for when the *reconstruction event* itself needs to be multi-party, audited, and hands-off.
+
 ## Install
 
 ```bash
