@@ -97,8 +97,10 @@ impl Session {
     }
 
     fn submit_share(&mut self, share: ShareSubmission) -> DaemonMessage {
-        // Only accept shares when Idle or Collecting
-        if self.state != SessionState::Idle && self.state != SessionState::Collecting {
+        // Reject only mid-reconstruction. Terminal states (Completed, Failed,
+        // TimedOut) hold the previous session's outcome for status queries;
+        // a new share submitted in one of them starts a fresh session.
+        if self.state == SessionState::Reconstructing {
             return DaemonMessage::ShareRejected {
                 reason: format!("Session is in {:?} state, not accepting shares", self.state),
             };
@@ -225,8 +227,9 @@ impl Session {
         self.received_indices.insert(actual_index);
         self.shares.push((actual_index, SecureShareData { bytes }));
 
-        // Start timer on first share
-        if self.state == SessionState::Idle {
+        // Start timer on the first share of a session (state is Idle or a
+        // held terminal state from the previous session)
+        if self.state != SessionState::Collecting {
             self.started_at = Some(Instant::now());
             self.state = SessionState::Collecting;
             info!("session started, collecting shares");
@@ -316,8 +319,7 @@ impl Session {
                 }
                 if self.strict_hardening {
                     keyquorum_core::memory::wipe_and_unlock(&mut secret);
-                    self.state = SessionState::Failed;
-                    self.reset();
+                    self.reset_to(SessionState::Failed);
                     return Some(DaemonMessage::QuorumReached {
                         action_result: ActionResult::Failure {
                             message: "strict_hardening: failed to apply memory protections to reconstructed secret".to_string(),
@@ -348,8 +350,7 @@ impl Session {
                         action_timeout_secs = self.config.action_timeout_secs,
                         "action timed out, aborting reconstruction and wiping shares"
                     );
-                    self.state = SessionState::Failed;
-                    self.reset();
+                    self.reset_to(SessionState::Failed);
                     return Some(DaemonMessage::QuorumReached {
                         action_result: ActionResult::Failure {
                             message: format!(
@@ -366,7 +367,6 @@ impl Session {
 
             match &result {
                 ActionResult::Success { message } => {
-                    self.state = SessionState::Completed;
                     info!(message = message.as_str(), "action completed successfully");
 
                     // Log which shares were used vs excluded
@@ -385,7 +385,7 @@ impl Session {
                         );
                     }
 
-                    self.reset();
+                    self.reset_to(SessionState::Completed);
                     return Some(DaemonMessage::QuorumReached {
                         action_result: result,
                     });
@@ -416,9 +416,8 @@ impl Session {
     fn handle_reconstruction_failure(&mut self) -> DaemonMessage {
         match self.config.on_failure {
             OnFailure::Wipe => {
-                self.state = SessionState::Failed;
                 warn!("all combinations failed, wiping shares (on_failure=wipe)");
-                self.reset();
+                self.reset_to(SessionState::Failed);
                 DaemonMessage::QuorumReached {
                     action_result: ActionResult::Failure {
                         message: "Reconstruction failed with all share combinations".to_string(),
@@ -428,7 +427,6 @@ impl Session {
             OnFailure::Retry => {
                 let at_share_cap = self.shares.len() as u8 >= self.config.total_shares;
                 if self.retry_attempts >= self.config.max_retries || at_share_cap {
-                    self.state = SessionState::Failed;
                     if at_share_cap {
                         warn!(
                             attempts = self.retry_attempts,
@@ -444,7 +442,7 @@ impl Session {
                         );
                     }
                     let attempts = self.retry_attempts;
-                    self.reset();
+                    self.reset_to(SessionState::Failed);
                     DaemonMessage::QuorumReached {
                         action_result: ActionResult::Failure {
                             message: format!(
@@ -476,16 +474,17 @@ impl Session {
 
     fn handle_timeout(&mut self) {
         warn!("session timed out, wiping all shares");
-        self.state = SessionState::TimedOut;
-        self.reset();
+        self.reset_to(SessionState::TimedOut);
     }
 
-    fn reset(&mut self) {
-        // ZeroizeOnDrop on SecureShareData handles wiping when Vec is cleared
+    /// Wipe all session state and hold the given (terminal) state so it
+    /// remains observable via status queries until the next session starts.
+    fn reset_to(&mut self, state: SessionState) {
+        // SecureShareData's Drop handles zeroize + munlock when the Vec is cleared
         self.shares.clear();
         self.received_indices.clear();
         self.started_at = None;
-        self.state = SessionState::Idle;
+        self.state = state;
         self.retry_attempts = 0;
     }
 }
@@ -759,8 +758,8 @@ mod tests {
             ),
         }
 
-        // Session should be reset after reconstruction
-        assert_eq!(session.state, SessionState::Idle);
+        // Session should be holding Completed after reconstruction
+        assert_eq!(session.state, SessionState::Completed);
         assert!(session.shares.is_empty());
         assert!(session.received_indices.is_empty());
     }
@@ -782,7 +781,7 @@ mod tests {
         });
 
         assert_eq!(session.shares.len(), 2);
-        session.reset();
+        session.reset_to(SessionState::Idle);
 
         assert_eq!(session.state, SessionState::Idle);
         assert!(session.shares.is_empty());
@@ -804,8 +803,36 @@ mod tests {
 
         session.handle_timeout();
 
-        assert_eq!(session.state, SessionState::Idle);
+        assert_eq!(session.state, SessionState::TimedOut);
         assert!(session.shares.is_empty());
+    }
+
+    #[test]
+    fn terminal_state_held_until_next_session() {
+        // After a timeout, status should show TimedOut (not Idle), and a
+        // new share submission should start a fresh session.
+        let mut session = make_test_session(3, 5);
+        let shares = make_shares(b"terminal-test", 3, 5);
+
+        session.submit_share(ShareSubmission {
+            index: share_index(&shares[0]),
+            data: shares[0].clone(),
+            submitted_by: None,
+        });
+        session.handle_timeout();
+        assert_eq!(session.status().state, SessionState::TimedOut);
+        assert_eq!(session.status().shares_received, 0);
+
+        // New share in TimedOut state starts a new session
+        let response = session.submit_share(ShareSubmission {
+            index: share_index(&shares[1]),
+            data: shares[1].clone(),
+            submitted_by: None,
+        });
+        assert!(matches!(response, DaemonMessage::ShareAccepted { .. }));
+        assert_eq!(session.state, SessionState::Collecting);
+        assert!(session.started_at.is_some());
+        assert_eq!(session.shares.len(), 1);
     }
 
     #[test]
@@ -1051,7 +1078,7 @@ mod tests {
 
         // Second attempt — max_retries=2, should wipe
         session.try_reconstruct().await;
-        assert_eq!(session.state, SessionState::Idle);
+        assert_eq!(session.state, SessionState::Failed);
         assert!(session.shares.is_empty());
         assert_eq!(session.retry_attempts, 0);
     }
@@ -1158,7 +1185,7 @@ mod tests {
         assert!(result.is_some());
 
         // Wipe mode: shares should be gone immediately
-        assert_eq!(session.state, SessionState::Idle);
+        assert_eq!(session.state, SessionState::Failed);
         assert!(session.shares.is_empty());
         assert_eq!(session.retry_attempts, 0);
     }
@@ -1478,7 +1505,7 @@ mod tests {
             ),
         }
         // Should have wiped (on_failure=wipe)
-        assert_eq!(session.state, SessionState::Idle);
+        assert_eq!(session.state, SessionState::Failed);
         assert!(session.shares.is_empty());
     }
 
@@ -1539,7 +1566,7 @@ mod tests {
             ),
         }
         // Must have wiped, not returned to Collecting
-        assert_eq!(session.state, SessionState::Idle);
+        assert_eq!(session.state, SessionState::Failed);
         assert!(session.shares.is_empty());
     }
 

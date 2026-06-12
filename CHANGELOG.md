@@ -15,6 +15,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - SIGTERM is now handled for graceful shutdown (previously only SIGINT), so `systemctl stop` cleans up the socket and pid file
 - Envelope `Share:` header share numbers are now range-checked against `total_shares` when `require_metadata` is enabled
 
+### Changed
+- Terminal session states (`Completed`, `Failed`, `TimedOut`) are now held and visible via `status` until the next session starts, instead of resetting straight to `Idle`. Submitting a share while in a terminal state starts a fresh session (shares are still wiped at the transition, as before).
+
 ### Fixed
 - **Locked memory pages were never released.** `Vec::zeroize()` clears the Vec before `munlock` runs, so every munlock call was a no-op on an empty slice, and share buffers were never munlocked at all. Locked pages accumulated for the life of the daemon; under a memlock rlimit with `strict_hardening` enabled, the daemon would eventually reject all shares until restarted. Wiping now goes through `wipe_and_unlock()`, which zeroizes contents and capacity, munlocks while the region is still addressable, then clears.
 - Unknown config keys are now rejected at startup (`deny_unknown_fields`) — previously a typo like `lockdwon = true` silently fell back to the less secure default

@@ -166,25 +166,52 @@ write_config "$WORK/retry.toml" "$SOCK" 2 3 \
 verification = "embedded-blake3"
 max_retries = 3'
 
-echo -n "$SECRET" | "$KQ_SPLIT" -n 3 -k 2 --no-strict-hardening -o files -d "$WORK/retry-shares/"
+# --no-integrity: without per-share CRC32, the corrupted share is ACCEPTED
+# and stored, so reconstruction actually exercises the combinatorial retry
+# path (blake3 verification rejects combos containing the bad share).
+# With CRC32 the bad share would be rejected at submission and this test
+# would pass through the normal path without testing retry at all.
+echo -n "$SECRET" | "$KQ_SPLIT" -n 3 -k 2 --no-strict-hardening --no-integrity -o files -d "$WORK/retry-shares/"
 
-# Corrupt the first share: flip some characters in the base64 payload
-# (the last line of the PEM envelope or the bare share)
+# Corrupt the first share's y-values. Keep the first 12 base64 chars intact
+# (they encode the KQ header and the share index byte, and a changed index
+# could collide with another share's), then rotate every alphanumeric in the
+# rest so the corruption is guaranteed, not luck-of-the-charset.
+# Also leave the final 4 chars (the last base64 quantum) alone — strict
+# decoders reject non-zero trailing bits, and we need the share to still
+# PARSE so it reaches reconstruction.
 CORRUPT_FILE="$WORK/retry-shares/share-1.txt"
-# Get the payload line (last non-empty line) and corrupt it
 LAST_LINE=$(tail -1 "$CORRUPT_FILE")
-CORRUPTED=$(echo "$LAST_LINE" | sed 's/A/Z/g; s/B/X/g; s/C/W/g')
-sed -i "s|${LAST_LINE}|${CORRUPTED}|" "$CORRUPT_FILE"
+MID="${LAST_LINE:12:$((${#LAST_LINE} - 16))}"
+CORRUPTED="${LAST_LINE:0:12}$(echo "$MID" | tr 'A-Za-z0-9' 'B-ZAb-za1-90')${LAST_LINE: -4}"
+head -n -1 "$CORRUPT_FILE" > "$CORRUPT_FILE.tmp"
+echo "$CORRUPTED" >> "$CORRUPT_FILE.tmp"
+mv "$CORRUPT_FILE.tmp" "$CORRUPT_FILE"
 
 DAEMON_PID=$(start_daemon "$WORK/retry.toml" "$WORK/retry.stdout")
 wait_for_socket "$SOCK"
 
 # Submit corrupted share first, then two valid ones
-"$KQ" submit --socket "$SOCK" < "$WORK/retry-shares/share-1.txt" 2>/dev/null || true
-"$KQ" submit --socket "$SOCK" < "$WORK/retry-shares/share-2.txt" 2>/dev/null || true
+SUBMIT1=$("$KQ" submit --socket "$SOCK" < "$WORK/retry-shares/share-1.txt" 2>&1 || true)
+SUBMIT2=$("$KQ" submit --socket "$SOCK" < "$WORK/retry-shares/share-2.txt" 2>&1 || true)
 SUBMIT3=$("$KQ" submit --socket "$SOCK" < "$WORK/retry-shares/share-3.txt" 2>&1 || true)
 
 sleep 0.2
+
+# The corrupted share must have been ACCEPTED (stored) for this test to
+# exercise retry — if it was rejected at submission, the test is vacuous
+if echo "$SUBMIT1" | grep -qi "accepted"; then
+    pass "corrupted share accepted into session (no CRC)"
+else
+    fail "corrupted share rejected at submission — retry path not exercised: $SUBMIT1"
+fi
+
+# Quorum at share 2 (corrupt+valid combo) must fail and enter retry
+if echo "$SUBMIT2" | grep -qi "more shares may help"; then
+    pass "first reconstruction attempt failed into retry"
+else
+    fail "expected retry-continuation response: $SUBMIT2"
+fi
 
 if grep -q "$SECRET" "$WORK/retry.stdout"; then
     pass "retry mode recovered from corrupted share"
