@@ -1,0 +1,15 @@
+# cargo-audit advisory ignores. cargo-audit and cargo-deny use SEPARATE config,
+# so advisory suppressions must be listed here AND in deny.toml's [advisories].
+# Both entries below are transitive, warning-class (not vulnerabilities), have
+# no upgrade path, and do not affect keyquorum's actual usage.
+[advisories]
+ignore = [
+    # proc-macro-error2 unmaintained — build-time-only proc-macro helper,
+    # reached via age -> i18n-embed-fl. Never in the runtime binary.
+    "RUSTSEC-2026-0173",
+    # rand "unsound with a custom logger using rand::rng()" — keyquorum has no
+    # direct rand usage (transitive via blahaj/age) and triggers neither the
+    # custom-logger nor rand::rng() path. rand 0.8.5 is latest 0.8.x; fix is in
+    # 0.9, not yet adopted by blahaj/age.
+    "RUSTSEC-2026-0097",
+]

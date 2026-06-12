@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Build
+- CI `audit` job now runs `cargo audit` directly (instead of `rustsec/audit-check`) so it honors `.cargo/audit.toml`, and that file suppresses RUSTSEC-2026-0173 (`proc-macro-error2` unmaintained) and RUSTSEC-2026-0097 (`rand` unsound only under a custom-logger + `rand::rng()` pattern keyquorum never uses). Both are transitive, warning-class, with no upgrade path. Mirrors the existing `deny.toml` ignore.
+
 ## [0.2.0] - 2026-06-12
 
 ### Added
