@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-06-12
+
 ### Added
 - `keyquorum verify` — offline recovery drill: reconstructs a set of shares in hardened memory purely to confirm the embedded blake3 checksum matches, then wipes everything and prints only PASS/FAIL plus which indices reconstructed. Never reveals the secret or runs an action. Threshold is read from share metadata (override with `-k`). Lets operators schedule backup-integrity checks of distributed shares.
 - `keyquorum daemon --check-config` — validate the config (applying lockdown/CLI overrides), print the effective settings, and exit without starting the daemon. Surfaces overrides (e.g. lockdown forcing `on_failure = wipe`) and rejects unknown keys.
@@ -82,6 +84,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - 127 unit and integration tests
 - Newline-delimited JSON protocol over Unix socket or TCP
 
+[0.2.0]: https://github.com/SiteRelEnby/keyquorum/compare/v0.1.1...v0.2.0
 [0.1.1]: https://github.com/SiteRelEnby/keyquorum/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/SiteRelEnby/keyquorum/compare/v0.1.0-alpha.1...v0.1.0
 [0.1.0-alpha.1]: https://github.com/SiteRelEnby/keyquorum/releases/tag/v0.1.0-alpha.1
