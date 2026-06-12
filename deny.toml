@@ -1,5 +1,16 @@
 [advisories]
 version = 2
+ignore = [
+    # proc-macro-error2: unmaintained (RUSTSEC-2026-0173). It is a build-time
+    # ONLY proc-macro helper, pulled in transitively as:
+    #   age -> i18n-embed-fl (proc-macro) -> proc-macro-error2
+    # No upgrade path exists: i18n-embed-fl 0.9.4 is the latest and still
+    # depends on it, and age 0.11 needs i18n-embed for localized error
+    # messages with no feature flag to opt out. It never ends up in the
+    # runtime binary, and the advisory is "unmaintained", not a vulnerability.
+    # Revisit when a newer age drops the i18n-embed-fl dependency.
+    "RUSTSEC-2026-0173",
+]
 
 [licenses]
 version = 2

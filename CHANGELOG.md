@@ -35,6 +35,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - More transient share/secret buffers are zeroized: client stdin read buffer and early-exit error paths, daemon connection line buffer, share-format decode intermediates (including the losing candidate in base64/base32 disambiguation), and the age encryption error path
 - Corrected age CLI install hint (`pip install age` installs an unofficial Python reimplementation; the reference CLI comes from distro packages or age-encryption.org)
 
+### Build
+- `deny.toml` ignores RUSTSEC-2026-0173 (`proc-macro-error2` unmaintained). It is a build-time-only proc-macro helper reached transitively via `age` → `i18n-embed-fl`, with no upgrade path (i18n-embed-fl 0.9.4 is latest and still depends on it) and no presence in the runtime binary. Not a vulnerability; revisit when `age` drops `i18n-embed-fl`.
+
 ## [0.1.1] - 2025-06-14
 
 ### Fixed
