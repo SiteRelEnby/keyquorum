@@ -3,6 +3,7 @@
 [![CI](https://github.com/SiteRelEnby/keyquorum/actions/workflows/ci.yml/badge.svg)](https://github.com/SiteRelEnby/keyquorum/actions/workflows/ci.yml)
 [![crates.io](https://img.shields.io/crates/v/keyquorum.svg)](https://crates.io/crates/keyquorum)
 [![License: Apache-2.0](https://img.shields.io/crates/l/keyquorum.svg)](https://github.com/SiteRelEnby/keyquorum/blob/main/LICENSE)
+
 ![transrights](https://pride-badges.pony.workers.dev/static/v1?label=trans%20rights&stripeWidth=6&stripeColors=5BCEFA,F5A9B8,FFFFFF,F5A9B8,5BCEFA)
 ![enbyware](https://pride-badges.pony.workers.dev/static/v1?label=enbyware&labelColor=%23555&stripeWidth=8&stripeColors=FCF434%2CFFFFFF%2C9C59D1%2C2C2C2C)
 ![pluralmade](https://pride-badges.pony.workers.dev/static/v1?label=plural+made&labelColor=%23555&stripeWidth=8&stripeColors=2e0525%2C553578%2C7675c3%2C89c7b0%2Cf4ecbd)
@@ -92,6 +93,14 @@ age -d -i identity.txt share-1.txt.age | keyquorum submit -c /etc/keyquorum/conf
 ```
 
 Use `--armor` (or `--armour`) to produce ASCII-armored `.age.txt` files that can be pasted into text channels (Signal, email, etc.) instead of binary `.age` files.
+
+### In-person key ceremonies
+
+For handing out shares in person, `--output interactive` shows one share at a time on the terminal, waits for each holder to record theirs, and clears the screen (and scrollback, where the terminal supports it) between shares — nothing is written to disk and no holder sees another's share:
+
+```bash
+echo -n "my-secret-key" | keyquorum-split -n 5 -k 3 -o interactive
+```
 
 ### 2. Configure the daemon
 

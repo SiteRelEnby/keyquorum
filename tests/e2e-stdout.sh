@@ -582,6 +582,58 @@ else
 fi
 
 # --------------------------------------------------------------------------
+echo "--- Test: interactive_ceremony ---"
+if ! command -v script &>/dev/null; then
+    echo "  SKIP: interactive_ceremony (script(1) not available for pty)"
+else
+    SECRET="interactive-e2e-test"
+    SOCK="$WORK/interactive.sock"
+    write_config "$WORK/interactive.toml" "$SOCK" 2 3
+
+    # script(1) provides a pty. Through it we send the secret, an EOT (0x04,
+    # EOF in canonical mode) to finish stdin, then Enter presses to step
+    # through the ceremony. The typescript captures what was displayed.
+    printf '%s\n\004\n\n\n\n' "$SECRET" | \
+        script -qec "$KQ_SPLIT -n 3 -k 2 --no-strict-hardening -o interactive" \
+        "$WORK/interactive-typescript" > /dev/null 2>&1 || true
+
+    SHOWN=$(grep -ac "KEYQUORUM-SHARE-V1" "$WORK/interactive-typescript" || true)
+    if [ "$SHOWN" -eq 3 ]; then
+        pass "interactive ceremony displayed all 3 shares"
+    else
+        fail "interactive ceremony showed $SHOWN/3 shares"
+    fi
+
+    if grep -aq "Ceremony complete" "$WORK/interactive-typescript"; then
+        pass "interactive ceremony completed"
+    else
+        fail "interactive ceremony did not complete"
+    fi
+
+    # Extract a share from the typescript (envelope marker + headers +
+    # blank + payload) and verify it round-trips through the daemon
+    FIRST_SHARE=$(grep -a -A5 -m1 "KEYQUORUM-SHARE-V1" "$WORK/interactive-typescript" | tr -d '\r')
+    DAEMON_PID=$(start_daemon "$WORK/interactive.toml" "$WORK/interactive.stdout")
+    wait_for_socket "$SOCK"
+    SUBMIT=$(echo "$FIRST_SHARE" | "$KQ" submit --socket "$SOCK" 2>&1 || true)
+    if echo "$SUBMIT" | grep -qi "accepted"; then
+        pass "share shown in ceremony is submittable"
+    else
+        fail "ceremony share rejected: $SUBMIT"
+    fi
+    kill "$DAEMON_PID" 2>/dev/null || true
+    wait "$DAEMON_PID" 2>/dev/null || true
+
+    # Lockdown must reject interactive output
+    RESULT=$(echo -n "x" | "$KQ_SPLIT" -n 3 -k 2 --no-strict-hardening --lockdown -o interactive 2>&1 || true)
+    if echo "$RESULT" | grep -qi "lockdown.*interactive"; then
+        pass "lockdown rejects interactive output"
+    else
+        fail "lockdown did not reject interactive: $RESULT"
+    fi
+fi
+
+# --------------------------------------------------------------------------
 echo ""
 echo "=== Results: $TESTS_PASSED passed, $TESTS_FAILED failed ==="
 

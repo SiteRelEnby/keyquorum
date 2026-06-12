@@ -83,7 +83,9 @@ enum OutputMode {
     Files,
     /// Encrypt each share to an age recipient before writing
     Age,
-    // Future: Interactive — show one at a time, clear between
+    /// Key ceremony: show one share at a time on the terminal, wait for
+    /// confirmation, clear the screen between shares
+    Interactive,
 }
 
 #[derive(Clone, ValueEnum)]
@@ -127,6 +129,10 @@ fn main() -> Result<()> {
 
     if cli.lockdown && matches!(cli.output, OutputMode::Stdout) {
         bail!("lockdown mode rejects --output stdout: shares must not appear in terminal output. Use --output files --dir <path>");
+    }
+
+    if cli.lockdown && matches!(cli.output, OutputMode::Interactive) {
+        bail!("lockdown mode rejects --output interactive: shares must not appear in terminal output. Use --output files or --output age");
     }
 
     // Read secret from stdin
@@ -226,6 +232,7 @@ fn main() -> Result<()> {
                 &recipients,
             )?
         }
+        OutputMode::Interactive => output_interactive(&shares, &cli, encoding)?,
     }
 
     // Zeroize and unlock secret (in that order: Vec::zeroize() would clear
@@ -295,6 +302,97 @@ fn output_files(
         dir.display()
     );
     eprintln!("Distribute each file to its holder, then delete this directory.");
+
+    Ok(())
+}
+
+/// Key ceremony mode: show one share at a time on the controlling terminal,
+/// wait for Enter between shares, clear the screen (including scrollback)
+/// before and after each.
+///
+/// Uses /dev/tty directly for both display and confirmation — stdin has
+/// already been consumed by the secret, and stdout may be redirected.
+fn output_interactive(shares: &[blahaj::Share], cli: &Cli, encoding: ShareEncoding) -> Result<()> {
+    use std::io::{BufRead, BufReader, Write};
+
+    let tty = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open("/dev/tty")
+        .map_err(|e| {
+            anyhow::anyhow!(
+                "interactive mode requires a controlling terminal (/dev/tty): {}",
+                e
+            )
+        })?;
+    let mut tty_out = tty.try_clone()?;
+    let mut tty_in = BufReader::new(tty);
+
+    // 2J clears the visible screen, 3J clears scrollback (where the terminal
+    // supports it), H homes the cursor
+    const CLEAR: &str = "\x1b[2J\x1b[3J\x1b[H";
+
+    write!(
+        tty_out,
+        "{}keyquorum key ceremony — {} shares, threshold {}\n\n\
+         Each share is shown alone and the screen is cleared between shares.\n\
+         Have each holder step up in turn.\n\n\
+         Press Enter to show share 1.\n",
+        CLEAR,
+        shares.len(),
+        cli.threshold
+    )?;
+    tty_out.flush()?;
+    let mut line = String::new();
+    tty_in.read_line(&mut line)?;
+
+    for (i, share) in shares.iter().enumerate() {
+        let mut sharks_data: Vec<u8> = Vec::from(share);
+        let index = sharks_data[0];
+        let opts = make_format_opts(cli, encoding, (i + 1) as u8);
+        let mut formatted = share_format::format_share(&sharks_data, &opts);
+
+        let mut screen = format!(
+            "{}Share {} of {} (index {})\n\n{}\n\n\
+             When the holder has recorded this share, press Enter to clear the screen.\n",
+            CLEAR,
+            i + 1,
+            shares.len(),
+            index,
+            formatted
+        );
+
+        // Write, wait for confirmation, then wipe our copies — error
+        // handling deferred so the plaintext is zeroized on every path
+        let write_result = tty_out
+            .write_all(screen.as_bytes())
+            .and_then(|_| tty_out.flush());
+        let read_result = if write_result.is_ok() {
+            line.clear();
+            tty_in.read_line(&mut line).map(|_| ())
+        } else {
+            Ok(())
+        };
+
+        sharks_data.zeroize();
+        formatted.zeroize();
+        screen.zeroize();
+
+        write_result?;
+        read_result?;
+
+        write!(tty_out, "{}", CLEAR)?;
+        tty_out.flush()?;
+    }
+
+    writeln!(
+        tty_out,
+        "{}Ceremony complete: {} shares shown, screen cleared.",
+        CLEAR,
+        shares.len()
+    )?;
+    tty_out.flush()?;
+    eprintln!("{} shares shown interactively.", shares.len());
 
     Ok(())
 }
