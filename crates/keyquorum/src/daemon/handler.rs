@@ -1,6 +1,7 @@
 use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader};
 use tokio::sync::{mpsc, oneshot};
 use tracing::{debug, warn};
+use zeroize::Zeroize;
 
 use super::session::SessionCommand;
 use keyquorum_core::protocol::{ClientMessage, DaemonMessage};
@@ -23,7 +24,7 @@ pub async fn handle_connection<R, W>(
     let mut buf_reader = BufReader::new(reader);
 
     loop {
-        let line = match read_limited_line(&mut buf_reader).await {
+        let mut line = match read_limited_line(&mut buf_reader).await {
             Ok(Some(line)) => line,
             Ok(None) => break, // EOF
             Err(e) => {
@@ -42,7 +43,11 @@ pub async fn handle_connection<R, W>(
             continue;
         }
 
-        let msg: ClientMessage = match serde_json::from_str(&line) {
+        // The raw line may contain share data; wipe it once parsed
+        // (serde copies the fields it needs into ClientMessage)
+        let parse_result = serde_json::from_str::<ClientMessage>(&line);
+        line.zeroize();
+        let msg: ClientMessage = match parse_result {
             Ok(m) => m,
             Err(e) => {
                 let err = DaemonMessage::Error {

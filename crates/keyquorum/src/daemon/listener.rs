@@ -44,12 +44,29 @@ pub async fn run_listeners(
     // Ensure parent directory exists
     if let Some(parent) = socket_path.parent() {
         std::fs::create_dir_all(parent).map_err(|e| {
-            anyhow::anyhow!("failed to create socket directory {}: {}", parent.display(), e)
+            anyhow::anyhow!(
+                "failed to create socket directory {}: {}",
+                parent.display(),
+                e
+            )
         })?;
     }
 
-    let unix_listener = UnixListener::bind(socket_path).map_err(|e| {
-        anyhow::anyhow!("failed to bind Unix socket {}: {}", socket_path.display(), e)
+    // Bind under a restrictive umask so the socket is never world-accessible,
+    // even for the instant before set_permissions below runs. Binding first
+    // and chmodding after would leave a window where umask-default permissions
+    // (often 0o777 for sockets) allow anyone to connect.
+    let old_umask = unsafe { libc::umask(0o117) };
+    let bind_result = UnixListener::bind(socket_path);
+    unsafe {
+        libc::umask(old_umask);
+    }
+    let unix_listener = bind_result.map_err(|e| {
+        anyhow::anyhow!(
+            "failed to bind Unix socket {}: {}",
+            socket_path.display(),
+            e
+        )
     })?;
 
     // Set socket permissions to 0o660
@@ -71,9 +88,9 @@ pub async fn run_listeners(
 
     if let Some(port) = config.tcp_port {
         let bind_addr = format!("127.0.0.1:{}", port);
-        let tcp_listener = TcpListener::bind(&bind_addr).await.map_err(|e| {
-            anyhow::anyhow!("failed to bind TCP listener on {}: {}", bind_addr, e)
-        })?;
+        let tcp_listener = TcpListener::bind(&bind_addr)
+            .await
+            .map_err(|e| anyhow::anyhow!("failed to bind TCP listener on {}: {}", bind_addr, e))?;
         info!(addr = %bind_addr, "listening on TCP");
 
         // Run both listeners concurrently

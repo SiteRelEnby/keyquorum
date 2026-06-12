@@ -21,7 +21,11 @@ pub async fn run(
 
     // Load config
     let mut config = Config::from_file(&config_path).map_err(|e| {
-        anyhow::anyhow!("failed to load config from {}: {}", config_path.display(), e)
+        anyhow::anyhow!(
+            "failed to load config from {}: {}",
+            config_path.display(),
+            e
+        )
     })?;
 
     // Apply CLI overrides
@@ -32,9 +36,9 @@ pub async fn run(
     // Apply and validate lockdown mode (from CLI flag or config file)
     // Note: lockdown re-enables strict_hardening even if --no-strict-hardening was passed
     config.apply_lockdown(lockdown);
-    config.validate_lockdown().map_err(|e| {
-        anyhow::anyhow!("{}", e)
-    })?;
+    config
+        .validate_lockdown()
+        .map_err(|e| anyhow::anyhow!("{}", e))?;
 
     // Initialize logging
     let filter =
@@ -91,21 +95,37 @@ pub async fn run(
         .await;
     });
 
-    // Set up signal handler for graceful shutdown
+    // Write PID file if configured
+    if let Some(ref pid_path) = config.daemon.pid_file {
+        std::fs::write(pid_path, format!("{}\n", std::process::id())).map_err(|e| {
+            anyhow::anyhow!("failed to write pid file {}: {}", pid_path.display(), e)
+        })?;
+        info!(path = %pid_path.display(), "wrote pid file");
+    }
+
+    // Set up signal handlers for graceful shutdown.
+    // SIGTERM matters: it's what systemd (and most service managers) send on stop.
     let socket_path = config.daemon.socket_path.clone();
     let ctrl_c = tokio::signal::ctrl_c();
+    let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
 
     tokio::select! {
         result = listener::run_listeners(&config.daemon, session_tx) => {
             result?;
         }
         _ = ctrl_c => {
-            info!("received shutdown signal");
+            info!("received SIGINT, shutting down");
+        }
+        _ = sigterm.recv() => {
+            info!("received SIGTERM, shutting down");
         }
     }
 
     // Cleanup
     listener::cleanup_socket(&socket_path);
+    if let Some(ref pid_path) = config.daemon.pid_file {
+        let _ = std::fs::remove_file(pid_path);
+    }
     info!("keyquorum daemon stopped");
 
     Ok(())

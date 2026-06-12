@@ -810,6 +810,7 @@ dependencies = [
  "blake3",
  "clap",
  "keyquorum-core",
+ "libc",
  "serde_json",
  "tokio",
  "tracing",

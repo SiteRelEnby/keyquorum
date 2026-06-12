@@ -23,6 +23,10 @@ async fn luks_unlock(device: &str, name: &str, secret: &[u8]) -> ActionResult {
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
+        // The session task wraps this in a timeout; on expiry the future is
+        // dropped, and kill_on_drop ensures the child doesn't outlive it
+        // with the secret still readable on its stdin pipe
+        .kill_on_drop(true)
         .spawn()
     {
         Ok(c) => c,
@@ -86,6 +90,7 @@ async fn run_command(program: &str, args: &[String], secret: &[u8]) -> ActionRes
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
+        .kill_on_drop(true)
         .spawn()
     {
         Ok(c) => c,

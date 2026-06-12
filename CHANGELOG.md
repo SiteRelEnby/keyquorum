@@ -10,6 +10,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ### Added
 - Age-encrypted share output: `--output age --recipients <file>` encrypts each share to a specific recipient's age public key before writing to disk. The split operator never sees plaintext shares. One `age1...` key per line in the recipients file (line order = share order). In lockdown mode, recipient count must exactly match share count.
 - `--armor` / `--armour` flag for ASCII-armored age output (`.age.txt` files), useful for text-based channels (Signal, email, etc.)
+- `action_timeout_secs` config option (default 120) — bounds post-reconstruction action execution. Previously a hung action (stuck cryptsetup, command that never exits) blocked the session task forever, freezing all clients and bypassing the session timeout. On timeout the child process is killed, shares are wiped, and the session resets.
+- `pid_file` daemon config option is now implemented (was previously parsed but ignored)
+- SIGTERM is now handled for graceful shutdown (previously only SIGINT), so `systemctl stop` cleans up the socket and pid file
+- Envelope `Share:` header share numbers are now range-checked against `total_shares` when `require_metadata` is enabled
+
+### Fixed
+- **Locked memory pages were never released.** `Vec::zeroize()` clears the Vec before `munlock` runs, so every munlock call was a no-op on an empty slice, and share buffers were never munlocked at all. Locked pages accumulated for the life of the daemon; under a memlock rlimit with `strict_hardening` enabled, the daemon would eventually reject all shares until restarted. Wiping now goes through `wipe_and_unlock()`, which zeroizes contents and capacity, munlocks while the region is still addressable, then clears.
+- Unknown config keys are now rejected at startup (`deny_unknown_fields`) — previously a typo like `lockdwon = true` silently fell back to the less secure default
+- Unix socket is now bound under a restrictive umask — previously there was a brief window between bind and chmod where umask-default permissions could allow any local user to connect
+- Blake3 secret verification now uses `blake3::Hash`'s constant-time comparison (was comparing raw byte slices)
+- More transient share/secret buffers are zeroized: client stdin read buffer and early-exit error paths, daemon connection line buffer, share-format decode intermediates (including the losing candidate in base64/base32 disambiguation), and the age encryption error path
+- Corrected age CLI install hint (`pip install age` installs an unofficial Python reimplementation; the reference CLI comes from distro packages or age-encryption.org)
 
 ## [0.1.1] - 2025-06-14
 

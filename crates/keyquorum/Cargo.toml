@@ -15,6 +15,7 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 anyhow = "1"
 serde_json = "1"
+libc = "0.2"
 blahaj = "0.6"
 base64 = "0.22"
 zeroize = { version = "1", features = ["zeroize_derive"] }

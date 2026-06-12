@@ -11,6 +11,10 @@ socket_path = "/run/keyquorum/keyquorum.sock"
 # Comment out to disable TCP entirely.
 # tcp_port = 35000
 
+# Optional: write the daemon PID to this file on startup
+# (removed again on clean shutdown)
+# pid_file = "/run/keyquorum/keyquorum.pid"
+
 # Lockdown mode: maximum security posture. Rejects stdout action,
 # forces on_failure=wipe, implies strict_hardening.
 # May gain new restrictions between versions.
@@ -35,6 +39,12 @@ total_shares = 5
 # all collected shares are securely wiped and the session resets.
 # Default: 1800 (30 minutes)
 timeout_secs = 1800
+
+# Maximum time in seconds the post-reconstruction action (cryptsetup,
+# command) may run before being killed. On timeout the session fails
+# and all shares are wiped.
+# Default: 120
+# action_timeout_secs = 120
 
 # Verification method for reconstructed secrets.
 # "embedded-blake3" (default): secret has an appended 32-byte blake3 checksum,

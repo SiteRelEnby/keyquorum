@@ -311,7 +311,7 @@ fi
 # --------------------------------------------------------------------------
 echo "--- Test: age_encrypted_output ---"
 if ! command -v age &>/dev/null || ! command -v age-keygen &>/dev/null; then
-    echo "  SKIP: age_encrypted_output (age CLI not installed — pip install age)"
+    echo "  SKIP: age_encrypted_output (age CLI not installed — apt install age)"
 else
     SECRET="age-encrypt-e2e-test"
     SOCK="$WORK/age.sock"
@@ -364,7 +364,7 @@ fi
 # --------------------------------------------------------------------------
 echo "--- Test: age_armored_output ---"
 if ! command -v age &>/dev/null || ! command -v age-keygen &>/dev/null; then
-    echo "  SKIP: age_armored_output (age CLI not installed — pip install age)"
+    echo "  SKIP: age_armored_output (age CLI not installed — apt install age)"
 else
     SECRET="age-armor-e2e-test"
     SOCK="$WORK/armor.sock"
@@ -415,7 +415,7 @@ fi
 # --------------------------------------------------------------------------
 echo "--- Test: age_fewer_recipients ---"
 if ! command -v age &>/dev/null || ! command -v age-keygen &>/dev/null; then
-    echo "  SKIP: age_fewer_recipients (age CLI not installed — pip install age)"
+    echo "  SKIP: age_fewer_recipients (age CLI not installed — apt install age)"
 else
     SECRET="age-fewer-e2e-test"
     SOCK="$WORK/fewer.sock"
@@ -476,7 +476,7 @@ fi
 # --------------------------------------------------------------------------
 echo "--- Test: age_lockdown_requires_all_recipients ---"
 if ! command -v age-keygen &>/dev/null; then
-    echo "  SKIP: age_lockdown_requires_all_recipients (age CLI not installed — pip install age)"
+    echo "  SKIP: age_lockdown_requires_all_recipients (age CLI not installed — apt install age)"
 else
     # Reuse keypairs
     if [ ! -f "$WORK/fewer-recipients.txt" ]; then
@@ -500,7 +500,7 @@ fi
 # --------------------------------------------------------------------------
 echo "--- Test: age_too_many_recipients ---"
 if ! command -v age-keygen &>/dev/null; then
-    echo "  SKIP: age_too_many_recipients (age CLI not installed — pip install age)"
+    echo "  SKIP: age_too_many_recipients (age CLI not installed — apt install age)"
 else
     # Reuse 3-key recipients file but only generate 2 shares
     if [ ! -f "$WORK/age-recipients.txt" ]; then

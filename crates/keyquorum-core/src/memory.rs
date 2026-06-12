@@ -1,5 +1,7 @@
 use std::io;
 
+use zeroize::Zeroize;
+
 /// Disable core dumps and /proc/self/mem access for this process.
 /// Must be called early in main() before any secrets are loaded.
 /// On non-Linux platforms, this is a no-op.
@@ -112,6 +114,21 @@ pub fn protect_secret(data: &[u8]) -> Vec<(&'static str, io::Error)> {
     failures
 }
 
+/// Zeroize a secret buffer and release its mlock, in that order.
+///
+/// `Vec::zeroize()` clears the Vec (length becomes 0), which would make a
+/// subsequent `munlock_slice(&buf)` a no-op on an empty slice — leaving the
+/// pages locked forever. This helper zeroizes through the slice (which does
+/// not truncate), munlocks while the region is still addressable, then clears.
+/// munlock failures are ignored: the region may never have been locked
+/// (protect_secret failure with strict_hardening off).
+pub fn wipe_and_unlock(buf: &mut Vec<u8>) {
+    buf.as_mut_slice().zeroize();
+    buf.spare_capacity_mut().zeroize();
+    let _ = munlock_slice(buf);
+    buf.clear();
+}
+
 /// Call all hardening functions at process startup.
 pub fn harden_process() -> io::Result<()> {
     disable_core_dumps()?;
@@ -182,12 +199,33 @@ mod tests {
     }
 
     #[test]
+    fn wipe_and_unlock_zeroizes_and_clears() {
+        let mut buf = vec![0xAAu8; 64];
+        let _ = mlock_slice(&buf); // may fail under low RLIMIT_MEMLOCK; wipe must cope
+        wipe_and_unlock(&mut buf);
+        assert!(buf.is_empty(), "buffer should be cleared");
+        // Capacity bytes must be zeroed (this is what Vec::zeroize also
+        // guarantees; the helper must not lose it while fixing the munlock order)
+        let spare = buf.spare_capacity_mut();
+        for byte in spare.iter().take(64) {
+            assert_eq!(
+                unsafe { byte.assume_init() },
+                0,
+                "capacity should be zeroed"
+            );
+        }
+    }
+
+    #[test]
     fn protect_secret_on_small_buffer() {
         let buf = vec![0u8; 64];
         let failures = protect_secret(&buf);
         // May fail on RLIMIT_MEMLOCK, but should not panic
         for (name, err) in &failures {
-            eprintln!("protect_secret: {} failed: {} (non-fatal in test)", name, err);
+            eprintln!(
+                "protect_secret: {} failed: {} (non-fatal in test)",
+                name, err
+            );
         }
     }
 

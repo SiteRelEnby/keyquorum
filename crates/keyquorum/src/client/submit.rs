@@ -8,7 +8,7 @@ use keyquorum_core::types::ShareSubmission;
 pub async fn run(user: Option<String>, socket: String) -> Result<()> {
     // Read share from stdin (pipe or interactive).
     // share_input is zeroized at end of function to avoid lingering in memory.
-    let share_input = {
+    let mut share_input = {
         if std::io::IsTerminal::is_terminal(&std::io::stdin()) {
             eprintln!("Enter share (then press Enter twice, or Ctrl+D):");
         }
@@ -41,29 +41,43 @@ pub async fn run(user: Option<String>, socket: String) -> Result<()> {
             saw_content = true;
             buf.push_str(&line);
         }
-        buf.trim().to_string()
+        // trim() borrows, to_string() copies — wipe the original buffer
+        let trimmed = buf.trim().to_string();
+        buf.zeroize();
+        trimmed
     };
 
     if share_input.is_empty() {
         bail!("no share data provided");
     }
 
-    // Parse the share (auto-detects format: PEM envelope, bare v1, legacy base64/base32)
-    let parsed = keyquorum_core::share_format::parse_share(&share_input)
-        .map_err(|e| anyhow::anyhow!("invalid share: {}", e))?;
+    // Parse the share (auto-detects format: PEM envelope, bare v1, legacy base64/base32).
+    // Wipe share_input before bailing on error paths — bail! would otherwise
+    // drop it unzeroized.
+    let parsed = match keyquorum_core::share_format::parse_share(&share_input) {
+        Ok(p) => p,
+        Err(e) => {
+            share_input.zeroize();
+            bail!("invalid share: {}", e);
+        }
+    };
 
     if parsed.malformed_envelope {
-        eprintln!(
-            "warning: share extracted from malformed envelope (missing marker or headers)"
-        );
+        eprintln!("warning: share extracted from malformed envelope (missing marker or headers)");
     }
 
     let index = parsed.index;
 
     // Validate it's a valid sharks share
     if blahaj::Share::try_from(parsed.sharks_data.as_slice()).is_err() {
+        drop(parsed); // ZeroizeOnDrop
+        share_input.zeroize();
         bail!("invalid share data");
     }
+
+    // Drop the parsed copy now: print_response below may call process::exit,
+    // which skips destructors (and with them ParsedShare's ZeroizeOnDrop)
+    drop(parsed);
 
     // Build and serialize the message. share_input is moved into
     // ShareSubmission (which has ZeroizeOnDrop), so it's zeroized when

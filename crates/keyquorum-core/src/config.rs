@@ -1,7 +1,10 @@
 use serde::Deserialize;
 use std::path::PathBuf;
 
+// deny_unknown_fields throughout: a typo'd key (e.g. `lockdwon = true`)
+// must be a startup error, not a silent fall-back to a less secure default.
 #[derive(Debug, Deserialize, Clone)]
+#[serde(deny_unknown_fields)]
 pub struct Config {
     pub daemon: DaemonConfig,
     pub session: SessionConfig,
@@ -11,6 +14,7 @@ pub struct Config {
 }
 
 #[derive(Debug, Deserialize, Clone)]
+#[serde(deny_unknown_fields)]
 pub struct DaemonConfig {
     #[serde(default = "default_socket_path")]
     pub socket_path: PathBuf,
@@ -25,11 +29,16 @@ pub struct DaemonConfig {
 }
 
 #[derive(Debug, Deserialize, Clone)]
+#[serde(deny_unknown_fields)]
 pub struct SessionConfig {
     pub threshold: u8,
     pub total_shares: u8,
     #[serde(default = "default_timeout")]
     pub timeout_secs: u64,
+    /// Maximum time the post-reconstruction action (cryptsetup, command)
+    /// may run before being killed and counted as a failure.
+    #[serde(default = "default_action_timeout")]
+    pub action_timeout_secs: u64,
     #[serde(default)]
     pub on_failure: OnFailure,
     #[serde(default = "default_max_retries")]
@@ -85,6 +94,7 @@ pub enum ActionConfig {
 }
 
 #[derive(Debug, Deserialize, Clone)]
+#[serde(deny_unknown_fields)]
 pub struct LoggingConfig {
     #[serde(default)]
     pub log_participation: bool,
@@ -111,6 +121,10 @@ fn default_socket_path() -> PathBuf {
 
 fn default_timeout() -> u64 {
     1800
+}
+
+fn default_action_timeout() -> u64 {
+    120
 }
 
 fn default_max_retries() -> u8 {
@@ -150,6 +164,9 @@ impl Config {
         }
         if self.session.timeout_secs == 0 {
             return Err("timeout_secs must be > 0".into());
+        }
+        if self.session.action_timeout_secs == 0 {
+            return Err("action_timeout_secs must be > 0".into());
         }
         if self.session.on_failure == OnFailure::Retry && self.session.max_retries == 0 {
             return Err("max_retries must be > 0 when on_failure is retry".into());
@@ -557,6 +574,70 @@ max_combinations = 0
 type = "stdout"
 "#;
         assert!(Config::parse(toml).is_err());
+    }
+
+    #[test]
+    fn unknown_daemon_key_rejected() {
+        // A typo'd security option must fail loudly, not silently use the default
+        let toml = r#"
+[daemon]
+lockdwon = true
+[session]
+threshold = 2
+total_shares = 3
+[action]
+type = "stdout"
+"#;
+        let err = Config::parse(toml).unwrap_err();
+        assert!(
+            err.to_string().contains("lockdwon"),
+            "expected unknown-field error, got: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn unknown_session_key_rejected() {
+        let toml = r#"
+[daemon]
+[session]
+threshold = 2
+total_shares = 3
+verifcation = "none"
+[action]
+type = "stdout"
+"#;
+        assert!(Config::parse(toml).is_err());
+    }
+
+    #[test]
+    fn action_timeout_defaults_and_validates() {
+        let toml = r#"
+[daemon]
+[session]
+threshold = 2
+total_shares = 3
+[action]
+type = "stdout"
+"#;
+        let config = Config::parse(toml).unwrap();
+        assert_eq!(config.session.action_timeout_secs, 120);
+
+        let toml_zero = r#"
+[daemon]
+[session]
+threshold = 2
+total_shares = 3
+action_timeout_secs = 0
+[action]
+type = "stdout"
+"#;
+        let err = Config::parse(toml_zero).unwrap_err();
+        assert!(
+            err.to_string().contains("action_timeout_secs"),
+            "expected action_timeout_secs error, got: {}",
+            err
+        );
     }
 
     #[test]

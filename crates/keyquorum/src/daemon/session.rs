@@ -5,7 +5,7 @@ use blahaj::Sharks;
 use tokio::sync::{mpsc, oneshot};
 use tokio::time::Instant;
 use tracing::{info, warn};
-use zeroize::{Zeroize, ZeroizeOnDrop};
+use zeroize::Zeroize;
 
 use keyquorum_core::config::{ActionConfig, OnFailure, SessionConfig, Verification};
 use keyquorum_core::protocol::{ActionResult, DaemonMessage};
@@ -13,10 +13,19 @@ use keyquorum_core::types::{SessionState, SessionStatus, ShareSubmission};
 
 use super::action;
 
-/// Holds raw share bytes, securely wiped on drop.
-#[derive(Zeroize, ZeroizeOnDrop)]
+/// Holds raw share bytes, securely wiped and munlocked on drop.
 struct SecureShareData {
     bytes: Vec<u8>,
+}
+
+impl Drop for SecureShareData {
+    // Manual Drop instead of ZeroizeOnDrop: the bytes were mlocked by
+    // protect_secret() at submission, and Vec::zeroize() clears the Vec
+    // before a munlock could see the region — the pages would stay locked
+    // for the life of the process.
+    fn drop(&mut self) {
+        keyquorum_core::memory::wipe_and_unlock(&mut self.bytes);
+    }
 }
 
 /// Commands sent from connection handlers to the session task.
@@ -195,7 +204,7 @@ impl Session {
                 warn!("memory protection {} failed for share data: {}", name, err);
             }
             if self.strict_hardening {
-                bytes.zeroize();
+                keyquorum_core::memory::wipe_and_unlock(&mut bytes);
                 return DaemonMessage::ShareRejected {
                     reason: "strict_hardening: failed to apply memory protections to share data"
                         .to_string(),
@@ -259,9 +268,7 @@ impl Session {
             // Parse shares for this combination
             let subset: Vec<blahaj::Share> = combo
                 .iter()
-                .filter_map(|&i| {
-                    blahaj::Share::try_from(self.shares[i].1.bytes.as_slice()).ok()
-                })
+                .filter_map(|&i| blahaj::Share::try_from(self.shares[i].1.bytes.as_slice()).ok())
                 .collect();
 
             if subset.len() != k {
@@ -282,7 +289,9 @@ impl Session {
                     }
                     let payload_len = secret.len() - 32;
                     let expected = blake3::hash(&secret[..payload_len]);
-                    if expected.as_bytes() != &secret[payload_len..] {
+                    // blake3::Hash's PartialEq<[u8]> is constant-time;
+                    // comparing as_bytes() slices would discard that
+                    if expected != secret[payload_len..] {
                         secret.zeroize();
                         continue;
                     }
@@ -306,8 +315,7 @@ impl Session {
                     );
                 }
                 if self.strict_hardening {
-                    secret.zeroize();
-                    let _ = keyquorum_core::memory::munlock_slice(&secret);
+                    keyquorum_core::memory::wipe_and_unlock(&mut secret);
                     self.state = SessionState::Failed;
                     self.reset();
                     return Some(DaemonMessage::QuorumReached {
@@ -318,12 +326,43 @@ impl Session {
                 }
             }
 
-            // Execute the configured action
-            let result = action::execute(&self.action_config, &secret).await;
+            // Execute the configured action, bounded by a timeout. A hung
+            // action (stuck cryptsetup, command that never exits) would
+            // otherwise block the session task — and with it all client
+            // messages AND the session timeout — forever.
+            let action_timeout = Duration::from_secs(self.config.action_timeout_secs);
+            let result = match tokio::time::timeout(
+                action_timeout,
+                action::execute(&self.action_config, &secret),
+            )
+            .await
+            {
+                Ok(r) => r,
+                Err(_) => {
+                    // A hung action is an action problem, not a wrong-shares
+                    // problem — trying further combinations (or retrying)
+                    // would block the daemon for another full timeout each.
+                    // Abort the whole attempt and wipe.
+                    keyquorum_core::memory::wipe_and_unlock(&mut secret);
+                    warn!(
+                        action_timeout_secs = self.config.action_timeout_secs,
+                        "action timed out, aborting reconstruction and wiping shares"
+                    );
+                    self.state = SessionState::Failed;
+                    self.reset();
+                    return Some(DaemonMessage::QuorumReached {
+                        action_result: ActionResult::Failure {
+                            message: format!(
+                                "action timed out after {}s, session reset",
+                                self.config.action_timeout_secs
+                            ),
+                        },
+                    });
+                }
+            };
 
             // Immediately zeroize and munlock the secret
-            secret.zeroize();
-            let _ = keyquorum_core::memory::munlock_slice(&secret);
+            keyquorum_core::memory::wipe_and_unlock(&mut secret);
 
             match &result {
                 ActionResult::Success { message } => {
@@ -331,8 +370,7 @@ impl Session {
                     info!(message = message.as_str(), "action completed successfully");
 
                     // Log which shares were used vs excluded
-                    let used_indices: Vec<u8> =
-                        combo.iter().map(|&i| self.shares[i].0).collect();
+                    let used_indices: Vec<u8> = combo.iter().map(|&i| self.shares[i].0).collect();
                     let excluded_indices: Vec<u8> = self
                         .shares
                         .iter()
@@ -522,7 +560,13 @@ pub async fn run_session(
     lockdown: bool,
     strict_hardening: bool,
 ) {
-    let mut session = Session::new(config, action_config, log_participation, lockdown, strict_hardening);
+    let mut session = Session::new(
+        config,
+        action_config,
+        log_participation,
+        lockdown,
+        strict_hardening,
+    );
 
     loop {
         let timeout_future = async {
@@ -603,6 +647,7 @@ mod tests {
                 threshold,
                 total_shares: total,
                 timeout_secs: 60,
+                action_timeout_secs: 120,
                 on_failure: OnFailure::Wipe,
                 max_retries: 3,
                 verification: Verification::None,
@@ -908,6 +953,7 @@ mod tests {
                 threshold: 2,
                 total_shares: 3,
                 timeout_secs: 60,
+                action_timeout_secs: 120,
                 on_failure: OnFailure::Retry,
                 max_retries: 3,
                 verification: Verification::None,
@@ -962,6 +1008,7 @@ mod tests {
                 threshold: 2,
                 total_shares: 4,
                 timeout_secs: 60,
+                action_timeout_secs: 120,
                 on_failure: OnFailure::Retry,
                 max_retries: 2,
                 verification: Verification::None,
@@ -1010,12 +1057,75 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn hung_action_times_out() {
+        // A command that sleeps longer than action_timeout_secs must be
+        // killed and reported as a failure instead of blocking the session
+        // task (and with it, all clients and the session timeout) forever.
+        let mut session = Session::new(
+            SessionConfig {
+                threshold: 2,
+                total_shares: 3,
+                timeout_secs: 60,
+                action_timeout_secs: 1,
+                on_failure: OnFailure::Wipe,
+                max_retries: 3,
+                verification: Verification::None,
+                max_combinations: 1,
+                require_metadata: false,
+            },
+            ActionConfig::Command {
+                program: "/bin/sleep".to_string(),
+                args: vec!["30".to_string()],
+            },
+            false,
+            false,
+            false,
+        );
+
+        let shares = make_shares(b"timeout-test", 2, 3);
+        session.submit_share(ShareSubmission {
+            index: share_index(&shares[0]),
+            data: shares[0].clone(),
+            submitted_by: None,
+        });
+        session.submit_share(ShareSubmission {
+            index: share_index(&shares[1]),
+            data: shares[1].clone(),
+            submitted_by: None,
+        });
+
+        let started = std::time::Instant::now();
+        let result = session.try_reconstruct().await;
+        assert!(
+            started.elapsed() < Duration::from_secs(10),
+            "reconstruction should be bounded by action_timeout_secs, took {:?}",
+            started.elapsed()
+        );
+        match result.unwrap() {
+            DaemonMessage::QuorumReached {
+                action_result: ActionResult::Failure { message },
+            } => {
+                assert!(
+                    message.contains("timed out"),
+                    "expected timeout failure, got: {}",
+                    message
+                );
+            }
+            other => panic!(
+                "expected timeout failure, got {:?}",
+                serde_json::to_string(&other).unwrap()
+            ),
+        }
+    }
+
+    #[tokio::test]
     async fn wipe_mode_clears_on_failure() {
         let mut session = Session::new(
             SessionConfig {
                 threshold: 2,
                 total_shares: 3,
                 timeout_secs: 60,
+                action_timeout_secs: 120,
                 on_failure: OnFailure::Wipe,
                 max_retries: 3,
                 verification: Verification::None,
@@ -1069,6 +1179,7 @@ mod tests {
                 threshold: 2,
                 total_shares: 3,
                 timeout_secs: 60,
+                action_timeout_secs: 120,
                 on_failure: OnFailure::Wipe,
                 max_retries: 3,
                 verification: Verification::EmbeddedBlake3,
@@ -1124,6 +1235,7 @@ mod tests {
                 threshold: 2,
                 total_shares: 3,
                 timeout_secs: 60,
+                action_timeout_secs: 120,
                 on_failure: OnFailure::Wipe,
                 max_retries: 3,
                 verification: Verification::EmbeddedBlake3,
@@ -1199,6 +1311,7 @@ mod tests {
                 threshold: 2,
                 total_shares: 3,
                 timeout_secs: 60,
+                action_timeout_secs: 120,
                 on_failure: OnFailure::Wipe,
                 max_retries: 3,
                 verification: Verification::EmbeddedBlake3,
@@ -1259,6 +1372,7 @@ mod tests {
                 threshold: 2,
                 total_shares: 3,
                 timeout_secs: 60,
+                action_timeout_secs: 120,
                 on_failure: OnFailure::Wipe,
                 max_retries: 3,
                 verification: Verification::None,
@@ -1312,6 +1426,7 @@ mod tests {
                 threshold: 2,
                 total_shares: 3,
                 timeout_secs: 60,
+                action_timeout_secs: 120,
                 on_failure: OnFailure::Wipe,
                 max_retries: 3,
                 verification: Verification::None,
@@ -1377,6 +1492,7 @@ mod tests {
                 threshold: 2,
                 total_shares: 2,
                 timeout_secs: 60,
+                action_timeout_secs: 120,
                 on_failure: OnFailure::Retry,
                 max_retries: 5, // plenty of retries left
                 verification: Verification::None,
@@ -1437,6 +1553,7 @@ mod tests {
                 threshold: 2,
                 total_shares: 3,
                 timeout_secs: 60,
+                action_timeout_secs: 120,
                 on_failure: OnFailure::Wipe,
                 max_retries: 3,
                 verification: Verification::None,
@@ -1445,8 +1562,8 @@ mod tests {
             },
             ActionConfig::Stdout,
             false,
-            true,  // lockdown enabled
-            true,  // strict_hardening (implied by lockdown)
+            true, // lockdown enabled
+            true, // strict_hardening (implied by lockdown)
         );
 
         assert!(session.strict_hardening);
@@ -1506,11 +1623,7 @@ mod tests {
     }
 
     /// Helper: generate shares and format them as v1 shares with envelopes.
-    fn make_v1_shares(
-        secret: &[u8],
-        threshold: u8,
-        total: u8,
-    ) -> Vec<(u8, String)> {
+    fn make_v1_shares(secret: &[u8], threshold: u8, total: u8) -> Vec<(u8, String)> {
         let sharks = Sharks(threshold);
         let dealer = sharks.dealer(secret);
         let shares: Vec<blahaj::Share> = dealer.take(total as usize).collect();
@@ -1520,10 +1633,8 @@ mod tests {
             .map(|(i, s)| {
                 let bytes: Vec<u8> = Vec::from(s);
                 let index = bytes[0];
-                let formatted = make_v1_share(
-                    &bytes, true, true, true,
-                    (i + 1) as u8, total, threshold,
-                );
+                let formatted =
+                    make_v1_share(&bytes, true, true, true, (i + 1) as u8, total, threshold);
                 (index, formatted)
             })
             .collect()
@@ -1571,6 +1682,7 @@ mod tests {
                 threshold: 2,
                 total_shares: 3,
                 timeout_secs: 60,
+                action_timeout_secs: 120,
                 on_failure: OnFailure::Wipe,
                 max_retries: 3,
                 verification: Verification::None,
@@ -1613,6 +1725,7 @@ mod tests {
                 threshold: 2,
                 total_shares: 3,
                 timeout_secs: 60,
+                action_timeout_secs: 120,
                 on_failure: OnFailure::Wipe,
                 max_retries: 3,
                 verification: Verification::None,
@@ -1646,6 +1759,7 @@ mod tests {
                 threshold: 3,
                 total_shares: 5,
                 timeout_secs: 60,
+                action_timeout_secs: 120,
                 on_failure: OnFailure::Wipe,
                 max_retries: 3,
                 verification: Verification::None,
@@ -1688,6 +1802,7 @@ mod tests {
                 threshold: 2,
                 total_shares: 3,
                 timeout_secs: 60,
+                action_timeout_secs: 120,
                 on_failure: OnFailure::Wipe,
                 max_retries: 3,
                 verification: Verification::None,
@@ -1707,10 +1822,7 @@ mod tests {
         let index = sharks_data[0];
         let binary = keyquorum_core::share_format::encode_v1(&sharks_data, true);
         let encoded = engine.encode(&binary);
-        let envelope = format!(
-            "KEYQUORUM-SHARE-V1\nScheme: shamir-gf256\n\n{}",
-            encoded,
-        );
+        let envelope = format!("KEYQUORUM-SHARE-V1\nScheme: shamir-gf256\n\n{}", encoded,);
 
         let response = session.submit_share(ShareSubmission {
             index,

@@ -1,6 +1,6 @@
 use anyhow::{bail, Result};
-use clap::{Parser, ValueEnum};
 use blahaj::Sharks;
+use clap::{Parser, ValueEnum};
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use zeroize::Zeroize;
@@ -18,7 +18,7 @@ use keyquorum_core::share_format::{self, ShareEncoding, ShareFormatOptions};
         a blake3 verification checksum is embedded in the secret before splitting.\n\n\
         Use --bare for the V1 binary payload without the PEM envelope, or --no-metadata \
         to keep the envelope but omit the headers.",
-    version,
+    version
 )]
 struct Cli {
     /// Total number of shares to generate (2-255)
@@ -187,13 +187,15 @@ fn main() -> Result<()> {
     // Output shares
     match cli.output {
         OutputMode::Stdout => output_stdout(&shares, &cli, encoding),
-        OutputMode::Files => {
-            output_files(&shares, &cli, encoding, cli.dir.as_ref().expect("validated above"))?
-        }
+        OutputMode::Files => output_files(
+            &shares,
+            &cli,
+            encoding,
+            cli.dir.as_ref().expect("validated above"),
+        )?,
         OutputMode::Age => {
-            let recipients = parse_recipients_file(
-                cli.recipients.as_ref().expect("validated above"),
-            )?;
+            let recipients =
+                parse_recipients_file(cli.recipients.as_ref().expect("validated above"))?;
             if recipients.len() > shares.len() {
                 bail!(
                     "too many recipients: {} recipients for {} shares",
@@ -226,11 +228,9 @@ fn main() -> Result<()> {
         }
     }
 
-    // Zeroize and unlock secret
-    secret.zeroize();
-    if let Err(e) = keyquorum_core::memory::munlock_slice(&secret) {
-        eprintln!("warning: munlock failed: {}", e);
-    }
+    // Zeroize and unlock secret (in that order: Vec::zeroize() would clear
+    // the Vec first, making the munlock a no-op on an empty slice)
+    keyquorum_core::memory::wipe_and_unlock(&mut secret);
 
     Ok(())
 }
@@ -276,13 +276,11 @@ fn output_files(
         let opts = make_format_opts(cli, encoding, (i + 1) as u8);
         let mut formatted = share_format::format_share(&sharks_data, &opts);
         let filename = dir.join(format!("share-{}.txt", i + 1));
-        let write_result =
-            std::fs::write(&filename, format!("{}\n", formatted));
+        let write_result = std::fs::write(&filename, format!("{}\n", formatted));
         sharks_data.zeroize();
         formatted.zeroize();
-        write_result.map_err(|e| {
-            anyhow::anyhow!("failed to write {}: {}", filename.display(), e)
-        })?;
+        write_result
+            .map_err(|e| anyhow::anyhow!("failed to write {}: {}", filename.display(), e))?;
         eprintln!(
             "Share {} (index {}) written to {}",
             i + 1,
@@ -357,22 +355,22 @@ fn output_age(
                 dir.join(format!("share-{}.txt.age", i + 1))
             };
 
-            let write_result = if cli.armor {
-                let armored = age::encrypt_and_armor(&recipients[i], formatted.as_bytes())
-                    .map_err(|e| anyhow::anyhow!("failed to encrypt share {}: {}", i + 1, e))?;
-                std::fs::write(&filename, armored.as_bytes())
+            // Encrypt first, zeroize the plaintext, and only then handle
+            // errors — a `?` before the zeroize calls would drop the
+            // plaintext share unwiped on the error path
+            let encrypt_result = if cli.armor {
+                age::encrypt_and_armor(&recipients[i], formatted.as_bytes()).map(String::into_bytes)
             } else {
-                let encrypted = age::encrypt(&recipients[i], formatted.as_bytes())
-                    .map_err(|e| anyhow::anyhow!("failed to encrypt share {}: {}", i + 1, e))?;
-                std::fs::write(&filename, &encrypted)
+                age::encrypt(&recipients[i], formatted.as_bytes())
             };
 
             sharks_data.zeroize();
             formatted.zeroize();
 
-            write_result.map_err(|e| {
-                anyhow::anyhow!("failed to write {}: {}", filename.display(), e)
-            })?;
+            let encrypted = encrypt_result
+                .map_err(|e| anyhow::anyhow!("failed to encrypt share {}: {}", i + 1, e))?;
+            std::fs::write(&filename, &encrypted)
+                .map_err(|e| anyhow::anyhow!("failed to write {}: {}", filename.display(), e))?;
 
             eprintln!(
                 "Share {} (index {}) encrypted and written to {}",
@@ -388,9 +386,8 @@ fn output_age(
             sharks_data.zeroize();
             formatted.zeroize();
 
-            write_result.map_err(|e| {
-                anyhow::anyhow!("failed to write {}: {}", filename.display(), e)
-            })?;
+            write_result
+                .map_err(|e| anyhow::anyhow!("failed to write {}: {}", filename.display(), e))?;
 
             eprintln!(
                 "Share {} (index {}) written UNENCRYPTED to {}",
@@ -413,10 +410,13 @@ fn output_age(
     if unencrypted_count == 0 {
         eprintln!("Distribute each .age file to its holder.");
         eprintln!("Recipients decrypt with: age -d -i identity.txt share-N.txt.age");
-        eprintln!("(age CLI: pip install age)");
+        eprintln!("(age CLI: apt install age / brew install age — see https://age-encryption.org)");
     } else {
         eprintln!("Distribute each file to its holder, then delete this directory.");
-        eprintln!("Encrypted shares require the age CLI to decrypt: pip install age");
+        eprintln!(
+            "Encrypted shares require the age CLI to decrypt \
+             (apt install age / brew install age — see https://age-encryption.org)"
+        );
     }
 
     Ok(())

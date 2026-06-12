@@ -234,12 +234,8 @@ pub fn decode_payload(bytes: &[u8]) -> Result<ParsedShare, ShareFormatError> {
 /// Encode bytes using the specified encoding.
 pub fn encode_bytes(data: &[u8], encoding: ShareEncoding) -> String {
     match encoding {
-        ShareEncoding::Base64 => {
-            base64::engine::general_purpose::STANDARD.encode(data)
-        }
-        ShareEncoding::Base32 => {
-            data_encoding::BASE32_NOPAD.encode(data)
-        }
+        ShareEncoding::Base64 => base64::engine::general_purpose::STANDARD.encode(data),
+        ShareEncoding::Base32 => data_encoding::BASE32_NOPAD.encode(data),
     }
 }
 
@@ -250,36 +246,33 @@ fn try_decode_base64(input: &str) -> Option<Vec<u8>> {
 
 /// Try decoding as base32 (case-insensitive). Returns None if invalid.
 fn try_decode_base32(input: &str) -> Option<Vec<u8>> {
-    let upper = input.to_uppercase();
-    data_encoding::BASE32_NOPAD.decode(upper.as_bytes()).ok()
+    let mut upper = input.to_uppercase();
+    let result = data_encoding::BASE32_NOPAD.decode(upper.as_bytes()).ok();
+    upper.zeroize();
+    result
 }
 
 /// Decode a string using auto-detected encoding (try base64 first, then base32).
 /// For simple cases where the caller doesn't need v1-aware disambiguation.
 pub fn decode_bytes(input: &str) -> Result<Vec<u8>, ShareFormatError> {
-    let cleaned: String = input.chars().filter(|c| !c.is_whitespace()).collect();
+    let mut cleaned: String = input.chars().filter(|c| !c.is_whitespace()).collect();
 
     if cleaned.is_empty() {
         return Err(ShareFormatError::Empty);
     }
 
-    if let Some(bytes) = try_decode_base64(&cleaned) {
-        return Ok(bytes);
-    }
+    let result = try_decode_base64(&cleaned).or_else(|| try_decode_base32(&cleaned));
+    cleaned.zeroize();
 
-    if let Some(bytes) = try_decode_base32(&cleaned) {
-        return Ok(bytes);
-    }
-
-    Err(ShareFormatError::InvalidEncoding(
-        "data is not valid base64 or base32".to_string(),
-    ))
+    result.ok_or_else(|| {
+        ShareFormatError::InvalidEncoding("data is not valid base64 or base32".to_string())
+    })
 }
 
 /// Decode with v1-aware disambiguation: if both base64 and base32 decode
 /// successfully, prefer whichever produces a valid v1 payload (KQ magic).
 fn decode_bytes_smart(input: &str) -> Result<Vec<u8>, ShareFormatError> {
-    let cleaned: String = input.chars().filter(|c| !c.is_whitespace()).collect();
+    let mut cleaned: String = input.chars().filter(|c| !c.is_whitespace()).collect();
 
     if cleaned.is_empty() {
         return Err(ShareFormatError::Empty);
@@ -287,15 +280,21 @@ fn decode_bytes_smart(input: &str) -> Result<Vec<u8>, ShareFormatError> {
 
     let b64 = try_decode_base64(&cleaned);
     let b32 = try_decode_base32(&cleaned);
+    cleaned.zeroize();
 
     match (b64, b32) {
         (Some(b64_bytes), Some(b32_bytes)) => {
-            // Both valid — prefer whichever has KQ magic (v1 format)
+            // Both valid — prefer whichever has KQ magic (v1 format).
+            // The losing candidate also holds share-derived bytes; wipe it.
             let b64_is_v1 = b64_bytes.len() >= 2 && b64_bytes[0..2] == MAGIC;
             let b32_is_v1 = b32_bytes.len() >= 2 && b32_bytes[0..2] == MAGIC;
             if b32_is_v1 && !b64_is_v1 {
+                let mut loser = b64_bytes;
+                loser.zeroize();
                 Ok(b32_bytes)
             } else {
+                let mut loser = b32_bytes;
+                loser.zeroize();
                 Ok(b64_bytes) // default: prefer base64
             }
         }
@@ -360,7 +359,12 @@ pub fn parse_share(input: &str) -> Result<ParsedShare, ShareFormatError> {
 
     // Bare format: smart decode (disambiguates base64 vs base32 using KQ magic)
     match decode_bytes_smart(trimmed) {
-        Ok(bytes) => decode_payload(&bytes),
+        Ok(mut bytes) => {
+            // decode_payload copies into ParsedShare; wipe the intermediate
+            let parsed = decode_payload(&bytes);
+            bytes.zeroize();
+            parsed
+        }
         Err(bare_err) => {
             // Fallback: if input looks like a mangled envelope (has header-like lines),
             // try to extract just the payload lines
@@ -376,13 +380,11 @@ pub fn parse_share(input: &str) -> Result<ParsedShare, ShareFormatError> {
 /// Try to extract a share payload from input that has orphaned envelope headers
 /// (marker or header lines deleted). Returns None if no payload found.
 fn try_extract_payload(input: &str) -> Option<ParsedShare> {
-    let has_headers = input
-        .lines()
-        .any(|l| {
-            let t = l.trim();
-            matches!(t.split_once(':'), Some((k, _)) if
+    let has_headers = input.lines().any(|l| {
+        let t = l.trim();
+        matches!(t.split_once(':'), Some((k, _)) if
                 matches!(k.trim(), "Share" | "Scheme" | "Integrity"))
-        });
+    });
 
     if !has_headers {
         return None;
@@ -410,9 +412,13 @@ fn try_extract_payload(input: &str) -> Option<ParsedShare> {
         return None;
     }
 
-    let joined = payload.join("");
-    let bytes = decode_bytes_smart(&joined).ok()?;
-    let mut parsed = decode_payload(&bytes).ok()?;
+    let mut joined = payload.join("");
+    let decoded = decode_bytes_smart(&joined).ok();
+    joined.zeroize();
+    let mut bytes = decoded?;
+    let parsed = decode_payload(&bytes).ok();
+    bytes.zeroize();
+    let mut parsed = parsed?;
     parsed.malformed_envelope = true;
     Some(parsed)
 }
@@ -422,9 +428,9 @@ fn parse_envelope(input: &str) -> Result<ParsedShare, ShareFormatError> {
     let mut lines = input.lines();
 
     // First line must be the marker
-    let first = lines.next().ok_or_else(|| {
-        ShareFormatError::InvalidEnvelope("empty input".to_string())
-    })?;
+    let first = lines
+        .next()
+        .ok_or_else(|| ShareFormatError::InvalidEnvelope("empty input".to_string()))?;
     if first.trim() != ENVELOPE_MARKER {
         return Err(ShareFormatError::InvalidEnvelope(format!(
             "expected '{}', got '{}'",
@@ -491,10 +497,17 @@ fn parse_envelope(input: &str) -> Result<ParsedShare, ShareFormatError> {
         ));
     }
 
-    // Concatenate payload lines and decode
-    let payload_str = payload_lines.join("");
-    let bytes = decode_bytes_smart(&payload_str)?;
-    let mut parsed = decode_payload(&bytes)?;
+    // Concatenate payload lines and decode, wiping intermediates
+    let mut payload_str = payload_lines.join("");
+    for line in payload_lines.iter_mut() {
+        line.zeroize();
+    }
+    let decoded = decode_bytes_smart(&payload_str);
+    payload_str.zeroize();
+    let mut bytes = decoded?;
+    let parsed = decode_payload(&bytes);
+    bytes.zeroize();
+    let mut parsed = parsed?;
 
     parsed.had_envelope = true;
     if has_any_metadata {
@@ -544,6 +557,14 @@ pub fn validate_metadata(
             return Err(ShareFormatError::MetadataMismatch(format!(
                 "share total is {} but daemon expects {}",
                 n, total_shares
+            )));
+        }
+    }
+    if let Some(s) = meta.share_number {
+        if s == 0 || s > total_shares {
+            return Err(ShareFormatError::MetadataMismatch(format!(
+                "share number {} out of range 1..={}",
+                s, total_shares
             )));
         }
     }
@@ -983,6 +1004,23 @@ mod tests {
     fn validate_metadata_unknown_scheme() {
         let meta = EnvelopeMetadata {
             scheme: Some("aes-gcm".to_string()),
+            ..Default::default()
+        };
+        let err = validate_metadata(&meta, 3, 5).unwrap_err();
+        assert!(matches!(err, ShareFormatError::MetadataMismatch(_)));
+    }
+
+    #[test]
+    fn validate_metadata_share_number_out_of_range() {
+        let meta = EnvelopeMetadata {
+            share_number: Some(6),
+            ..Default::default()
+        };
+        let err = validate_metadata(&meta, 3, 5).unwrap_err();
+        assert!(matches!(err, ShareFormatError::MetadataMismatch(_)));
+
+        let meta = EnvelopeMetadata {
+            share_number: Some(0),
             ..Default::default()
         };
         let err = validate_metadata(&meta, 3, 5).unwrap_err();

@@ -53,6 +53,7 @@ impl TestDaemon {
             threshold,
             total_shares: total,
             timeout_secs,
+            action_timeout_secs: 120,
             on_failure: OnFailure::Wipe,
             max_retries: 3,
             verification: Verification::None,
@@ -63,7 +64,15 @@ impl TestDaemon {
 
         // Spawn session task
         let session_handle = tokio::spawn(async move {
-            run_session(session_rx, session_config, action_config, false, false, false).await;
+            run_session(
+                session_rx,
+                session_config,
+                action_config,
+                false,
+                false,
+                false,
+            )
+            .await;
         });
 
         // Spawn listener task
@@ -159,7 +168,10 @@ async fn full_quorum_returns_action_result() {
             assert_eq!(status.shares_received, 1);
             assert_eq!(status.shares_needed, 1);
         }
-        other => panic!("expected ShareAccepted, got {:?}", serde_json::to_string(&other).unwrap()),
+        other => panic!(
+            "expected ShareAccepted, got {:?}",
+            serde_json::to_string(&other).unwrap()
+        ),
     }
 
     // Second share — quorum reached, should get action result
@@ -193,7 +205,10 @@ async fn status_query_reflects_session_state() {
             assert_eq!(status.shares_received, 0);
             assert_eq!(status.shares_needed, 3);
         }
-        other => panic!("expected Status, got {:?}", serde_json::to_string(&other).unwrap()),
+        other => panic!(
+            "expected Status, got {:?}",
+            serde_json::to_string(&other).unwrap()
+        ),
     }
 
     // Submit one share
@@ -208,7 +223,10 @@ async fn status_query_reflects_session_state() {
             assert_eq!(status.shares_received, 1);
             assert_eq!(status.shares_needed, 2);
         }
-        other => panic!("expected Status, got {:?}", serde_json::to_string(&other).unwrap()),
+        other => panic!(
+            "expected Status, got {:?}",
+            serde_json::to_string(&other).unwrap()
+        ),
     }
 }
 
@@ -320,7 +338,10 @@ async fn multiple_messages_on_same_connection() {
         DaemonMessage::Status { status } => {
             assert_eq!(status.shares_received, 1);
         }
-        other => panic!("expected Status, got {:?}", serde_json::to_string(&other).unwrap()),
+        other => panic!(
+            "expected Status, got {:?}",
+            serde_json::to_string(&other).unwrap()
+        ),
     }
 }
 
@@ -449,6 +470,7 @@ impl TestDaemon {
             threshold,
             total_shares: total,
             timeout_secs,
+            action_timeout_secs: 120,
             on_failure: OnFailure::Wipe,
             max_retries: 3,
             verification: Verification::None,
@@ -458,7 +480,15 @@ impl TestDaemon {
         let action_config = ActionConfig::Stdout;
 
         let session_handle = tokio::spawn(async move {
-            run_session(session_rx, session_config, action_config, false, false, false).await;
+            run_session(
+                session_rx,
+                session_config,
+                action_config,
+                false,
+                false,
+                false,
+            )
+            .await;
         });
 
         let listener = UnixListener::bind(&socket_path).unwrap();
