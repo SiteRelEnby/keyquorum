@@ -76,6 +76,19 @@ timeout_secs = 1800
 # Default: false
 # require_metadata = false
 
+# Duress (canary) shares: designated share indices that trigger an alert
+# when submitted. The submission looks completely normal (response, status,
+# logs) — detection is never logged; the alert program is the only
+# notification channel. mode = "alert" lets the session proceed (unlock
+# under duress, but security knows); mode = "poison" makes reconstruction
+# silently fail like a genuine bad-share failure (alert_program optional).
+# The alert program runs detached and receives no share or secret data.
+# [session.duress]
+# indices = [4, 5, 6]
+# mode = "alert"
+# alert_program = "/usr/local/bin/notify-security"
+# alert_args = ["--channel", "ops"]
+
 # Action to perform when quorum is reached.
 # Choose one of: luks, stdout, command
 

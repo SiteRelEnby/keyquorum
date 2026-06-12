@@ -59,6 +59,7 @@ impl TestDaemon {
             verification: Verification::None,
             max_combinations: 100,
             require_metadata: false,
+            duress: None,
         };
         let action_config = ActionConfig::Stdout;
 
@@ -476,6 +477,7 @@ impl TestDaemon {
             verification: Verification::None,
             max_combinations: 100,
             require_metadata,
+            duress: None,
         };
         let action_config = ActionConfig::Stdout;
 

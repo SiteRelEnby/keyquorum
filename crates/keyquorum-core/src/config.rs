@@ -51,6 +51,50 @@ pub struct SessionConfig {
     /// Cross-validates envelope metadata against daemon config.
     #[serde(default)]
     pub require_metadata: bool,
+    /// Duress (canary) share configuration. See `DuressConfig`.
+    #[serde(default)]
+    pub duress: Option<DuressConfig>,
+}
+
+/// Duress/canary shares: designated share indices that act as tripwires.
+///
+/// When a share with one of these indices is submitted, the configured
+/// alert program is spawned (with NO share or secret data) and the
+/// submission is otherwise handled completely normally — the response,
+/// status counters, and log output are indistinguishable from any other
+/// accepted share, so a coerced participant's submission looks routine.
+///
+/// Nothing about duress detection is ever logged: daemon logs on the host
+/// may be visible to whoever is applying the coercion. The alert program
+/// is the only notification channel.
+#[derive(Debug, Deserialize, Clone)]
+#[serde(deny_unknown_fields)]
+pub struct DuressConfig {
+    /// Share indices (x-coordinates, as shown by keyquorum-split) that
+    /// trigger the duress response when submitted.
+    pub indices: Vec<u8>,
+    #[serde(default)]
+    pub mode: DuressMode,
+    /// Program spawned when a duress share is submitted. Runs detached,
+    /// receives no share or secret data, no stdin. Required in alert mode.
+    pub alert_program: Option<String>,
+    #[serde(default)]
+    pub alert_args: Vec<String>,
+}
+
+#[derive(Debug, Default, Deserialize, Clone, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum DuressMode {
+    /// The session proceeds normally — if quorum is reached the action
+    /// runs (unlock-under-duress) — but the alert fires. Choose this when
+    /// stopping the unlock would itself endanger the coerced participant.
+    #[default]
+    Alert,
+    /// The session looks normal but reconstruction silently fails with the
+    /// same messages as a genuine bad-share failure. The secret is never
+    /// reconstructed. Combine with an alert program if notification is
+    /// also wanted.
+    Poison,
 }
 
 /// What to do when reconstruction fails after reaching quorum.
@@ -183,6 +227,18 @@ impl Config {
         }
         if self.session.max_combinations == 0 {
             return Err("max_combinations must be > 0".into());
+        }
+        if let Some(ref duress) = self.session.duress {
+            if duress.indices.is_empty() {
+                return Err("duress.indices must not be empty".into());
+            }
+            if duress.mode == DuressMode::Alert && duress.alert_program.is_none() {
+                return Err(
+                    "duress mode \"alert\" requires alert_program (alert mode does nothing \
+                     without one; use mode = \"poison\" for silent denial without notification)"
+                        .into(),
+                );
+            }
         }
         Ok(())
     }
@@ -570,6 +626,110 @@ type = "stdout"
 threshold = 2
 total_shares = 3
 max_combinations = 0
+[action]
+type = "stdout"
+"#;
+        assert!(Config::parse(toml).is_err());
+    }
+
+    #[test]
+    fn parse_duress_config() {
+        let toml = r#"
+[daemon]
+[session]
+threshold = 2
+total_shares = 3
+[session.duress]
+indices = [3]
+mode = "alert"
+alert_program = "/usr/local/bin/notify"
+alert_args = ["--channel", "ops"]
+[action]
+type = "stdout"
+"#;
+        let config = Config::parse(toml).unwrap();
+        let duress = config.session.duress.unwrap();
+        assert_eq!(duress.indices, vec![3]);
+        assert_eq!(duress.mode, DuressMode::Alert);
+        assert_eq!(
+            duress.alert_program.as_deref(),
+            Some("/usr/local/bin/notify")
+        );
+        assert_eq!(duress.alert_args, vec!["--channel", "ops"]);
+    }
+
+    #[test]
+    fn duress_alert_requires_program() {
+        let toml = r#"
+[daemon]
+[session]
+threshold = 2
+total_shares = 3
+[session.duress]
+indices = [3]
+mode = "alert"
+[action]
+type = "stdout"
+"#;
+        let err = Config::parse(toml).unwrap_err();
+        assert!(
+            err.to_string().contains("alert_program"),
+            "expected alert_program error, got: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn duress_poison_without_program_ok() {
+        let toml = r#"
+[daemon]
+[session]
+threshold = 2
+total_shares = 3
+[session.duress]
+indices = [3, 5]
+mode = "poison"
+[action]
+type = "stdout"
+"#;
+        let config = Config::parse(toml).unwrap();
+        let duress = config.session.duress.unwrap();
+        assert_eq!(duress.mode, DuressMode::Poison);
+        assert!(duress.alert_program.is_none());
+    }
+
+    #[test]
+    fn duress_empty_indices_rejected() {
+        let toml = r#"
+[daemon]
+[session]
+threshold = 2
+total_shares = 3
+[session.duress]
+indices = []
+mode = "poison"
+[action]
+type = "stdout"
+"#;
+        let err = Config::parse(toml).unwrap_err();
+        assert!(
+            err.to_string().contains("indices"),
+            "expected indices error, got: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn duress_unknown_key_rejected() {
+        let toml = r#"
+[daemon]
+[session]
+threshold = 2
+total_shares = 3
+[session.duress]
+indices = [3]
+mode = "poison"
+alert_prgram = "/bin/true"
 [action]
 type = "stdout"
 "#;

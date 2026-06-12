@@ -55,6 +55,10 @@ struct Session {
     log_participation: bool,
     retry_attempts: u8,
     strict_hardening: bool,
+    /// Set when a duress share was submitted in poison mode. Reconstruction
+    /// then fails with messages identical to a genuine bad-share failure.
+    /// Never logged. Cleared whenever the session is wiped.
+    poisoned: bool,
 }
 
 impl Session {
@@ -76,6 +80,38 @@ impl Session {
             log_participation,
             retry_attempts: 0,
             strict_hardening,
+            poisoned: false,
+        }
+    }
+
+    /// Duress tripwire: fire the alert (detached, no share/secret data) and
+    /// poison the session if configured. Deliberately silent — no log
+    /// output, because host logs may be visible to whoever is coercing the
+    /// participant. The alert program is the only notification channel.
+    fn check_duress(&mut self, index: u8) {
+        let Some(ref duress) = self.config.duress else {
+            return;
+        };
+        if !duress.indices.contains(&index) {
+            return;
+        }
+        if duress.mode == keyquorum_core::config::DuressMode::Poison {
+            self.poisoned = true;
+        }
+        if let Some(ref program) = duress.alert_program {
+            let spawned = std::process::Command::new(program)
+                .args(&duress.alert_args)
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .spawn();
+            // Reap the child off-thread so it doesn't linger as a zombie;
+            // failures are intentionally swallowed (nothing to log)
+            if let Ok(mut child) = spawned {
+                std::thread::spawn(move || {
+                    let _ = child.wait();
+                });
+            }
         }
     }
 
@@ -239,6 +275,10 @@ impl Session {
         self.received_indices.insert(actual_index);
         self.shares.push((actual_index, SecureShareData { bytes }));
 
+        // Duress tripwire — after acceptance so the response below is
+        // indistinguishable from any other accepted share
+        self.check_duress(actual_index);
+
         // Start timer on the first share of a session (state is Idle or a
         // held terminal state from the previous session)
         if self.state != SessionState::Collecting {
@@ -270,6 +310,13 @@ impl Session {
             shares = self.shares.len(),
             "attempting reconstruction"
         );
+
+        // Poisoned by a duress share: fail exactly like a genuine bad-share
+        // reconstruction failure — same log lines, same client messages,
+        // same on_failure handling. The secret is never reconstructed.
+        if self.poisoned {
+            return Some(self.handle_reconstruction_failure());
+        }
 
         let k = self.config.threshold as usize;
         let n = self.shares.len();
@@ -498,6 +545,7 @@ impl Session {
         self.started_at = None;
         self.state = state;
         self.retry_attempts = 0;
+        self.poisoned = false;
     }
 }
 
@@ -664,6 +712,7 @@ mod tests {
                 verification: Verification::None,
                 max_combinations: 100,
                 require_metadata: false,
+                duress: None,
             },
             ActionConfig::Stdout,
             false,
@@ -998,6 +1047,7 @@ mod tests {
                 verification: Verification::None,
                 max_combinations: 100,
                 require_metadata: false,
+                duress: None,
             },
             ActionConfig::Command {
                 program: "/bin/false".to_string(),
@@ -1053,6 +1103,7 @@ mod tests {
                 verification: Verification::None,
                 max_combinations: 100,
                 require_metadata: false,
+                duress: None,
             },
             ActionConfig::Command {
                 program: "/bin/false".to_string(),
@@ -1111,6 +1162,7 @@ mod tests {
                 verification: Verification::None,
                 max_combinations: 1,
                 require_metadata: false,
+                duress: None,
             },
             ActionConfig::Command {
                 program: "/bin/sleep".to_string(),
@@ -1170,6 +1222,7 @@ mod tests {
                 verification: Verification::None,
                 max_combinations: 100,
                 require_metadata: false,
+                duress: None,
             },
             ActionConfig::Command {
                 program: "/bin/false".to_string(),
@@ -1224,6 +1277,7 @@ mod tests {
                 verification: Verification::EmbeddedBlake3,
                 max_combinations: 100,
                 require_metadata: false,
+                duress: None,
             },
             ActionConfig::Stdout,
             false,
@@ -1280,6 +1334,7 @@ mod tests {
                 verification: Verification::EmbeddedBlake3,
                 max_combinations: 100,
                 require_metadata: false,
+                duress: None,
             },
             ActionConfig::Stdout,
             false,
@@ -1356,6 +1411,7 @@ mod tests {
                 verification: Verification::EmbeddedBlake3,
                 max_combinations: 100,
                 require_metadata: false,
+                duress: None,
             },
             // Use Command /bin/echo so we can detect if action runs unexpectedly
             ActionConfig::Command {
@@ -1417,6 +1473,7 @@ mod tests {
                 verification: Verification::None,
                 max_combinations: 100,
                 require_metadata: false,
+                duress: None,
             },
             ActionConfig::Stdout,
             false,
@@ -1471,6 +1528,7 @@ mod tests {
                 verification: Verification::None,
                 max_combinations: 1,
                 require_metadata: false,
+                duress: None,
             },
             ActionConfig::Command {
                 program: "/bin/false".to_string(),
@@ -1537,6 +1595,7 @@ mod tests {
                 verification: Verification::None,
                 max_combinations: 100,
                 require_metadata: false,
+                duress: None,
             },
             ActionConfig::Command {
                 program: "/bin/false".to_string(),
@@ -1598,6 +1657,7 @@ mod tests {
                 verification: Verification::None,
                 max_combinations: 100,
                 require_metadata: false,
+                duress: None,
             },
             ActionConfig::Stdout,
             false,
@@ -1636,6 +1696,201 @@ mod tests {
                 serde_json::to_string(&other).unwrap()
             ),
         }
+    }
+
+    use keyquorum_core::config::{DuressConfig, DuressMode};
+
+    fn make_duress_session(
+        threshold: u8,
+        total: u8,
+        indices: Vec<u8>,
+        mode: DuressMode,
+        alert_program: Option<String>,
+        alert_args: Vec<String>,
+    ) -> Session {
+        Session::new(
+            SessionConfig {
+                threshold,
+                total_shares: total,
+                timeout_secs: 60,
+                action_timeout_secs: 120,
+                on_failure: OnFailure::Wipe,
+                max_retries: 3,
+                verification: Verification::None,
+                max_combinations: 100,
+                require_metadata: false,
+                duress: Some(DuressConfig {
+                    indices,
+                    mode,
+                    alert_program,
+                    alert_args,
+                }),
+            },
+            ActionConfig::Stdout,
+            false,
+            false,
+            false,
+        )
+    }
+
+    fn unique_marker_path(tag: &str) -> std::path::PathBuf {
+        std::env::temp_dir().join(format!(
+            "kq-duress-{}-{}-{:?}",
+            tag,
+            std::process::id(),
+            std::thread::current().id()
+        ))
+    }
+
+    /// Poll for a file to appear (the alert program runs detached).
+    fn wait_for_file(path: &std::path::Path, timeout: Duration) -> bool {
+        let start = std::time::Instant::now();
+        while start.elapsed() < timeout {
+            if path.exists() {
+                return true;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        false
+    }
+
+    #[tokio::test]
+    async fn duress_alert_fires_and_session_proceeds() {
+        let marker = unique_marker_path("alert");
+        let _ = std::fs::remove_file(&marker);
+
+        let shares = make_shares(b"duress-alert-test", 2, 3);
+        let duress_index = share_index(&shares[0]);
+
+        let mut session = make_duress_session(
+            2,
+            3,
+            vec![duress_index],
+            DuressMode::Alert,
+            Some("/bin/touch".to_string()),
+            vec![marker.to_string_lossy().into_owned()],
+        );
+
+        // Duress share: response must look like any other acceptance
+        let response = session.submit_share(ShareSubmission {
+            index: duress_index,
+            data: shares[0].clone(),
+            submitted_by: None,
+        });
+        assert!(matches!(response, DaemonMessage::ShareAccepted { .. }));
+        assert!(!session.poisoned, "alert mode must not poison");
+        assert!(
+            wait_for_file(&marker, Duration::from_secs(2)),
+            "alert program did not run"
+        );
+
+        // Session proceeds normally: quorum still reconstructs
+        session.submit_share(ShareSubmission {
+            index: share_index(&shares[1]),
+            data: shares[1].clone(),
+            submitted_by: None,
+        });
+        let result = session.try_reconstruct().await;
+        assert!(matches!(
+            result,
+            Some(DaemonMessage::QuorumReached {
+                action_result: ActionResult::Success { .. }
+            })
+        ));
+
+        let _ = std::fs::remove_file(&marker);
+    }
+
+    #[tokio::test]
+    async fn duress_poison_fails_like_bad_shares() {
+        let shares = make_shares(b"duress-poison-test", 2, 3);
+        let duress_index = share_index(&shares[0]);
+
+        let mut session =
+            make_duress_session(2, 3, vec![duress_index], DuressMode::Poison, None, vec![]);
+
+        session.submit_share(ShareSubmission {
+            index: duress_index,
+            data: shares[0].clone(),
+            submitted_by: None,
+        });
+        session.submit_share(ShareSubmission {
+            index: share_index(&shares[1]),
+            data: shares[1].clone(),
+            submitted_by: None,
+        });
+        assert!(session.poisoned);
+
+        // Must fail with the exact same message as a genuine bad-share
+        // failure — indistinguishable to the submitter
+        let result = session.try_reconstruct().await;
+        match result.unwrap() {
+            DaemonMessage::QuorumReached {
+                action_result: ActionResult::Failure { message },
+            } => {
+                assert_eq!(
+                    message, "Reconstruction failed with all share combinations",
+                    "poison failure must be indistinguishable from a real one"
+                );
+            }
+            other => panic!(
+                "expected generic failure, got {:?}",
+                serde_json::to_string(&other).unwrap()
+            ),
+        }
+        assert_eq!(session.state, SessionState::Failed);
+        assert!(!session.poisoned, "wipe must clear the poison flag");
+
+        // A fresh session without the duress share works normally
+        session.submit_share(ShareSubmission {
+            index: share_index(&shares[1]),
+            data: shares[1].clone(),
+            submitted_by: None,
+        });
+        session.submit_share(ShareSubmission {
+            index: share_index(&shares[2]),
+            data: shares[2].clone(),
+            submitted_by: None,
+        });
+        let result = session.try_reconstruct().await;
+        assert!(matches!(
+            result,
+            Some(DaemonMessage::QuorumReached {
+                action_result: ActionResult::Success { .. }
+            })
+        ));
+    }
+
+    #[test]
+    fn duress_not_triggered_by_other_indices() {
+        let marker = unique_marker_path("negative");
+        let _ = std::fs::remove_file(&marker);
+
+        let shares = make_shares(b"duress-negative-test", 2, 3);
+        let duress_index = share_index(&shares[0]);
+
+        let mut session = make_duress_session(
+            2,
+            3,
+            vec![duress_index],
+            DuressMode::Poison,
+            Some("/bin/touch".to_string()),
+            vec![marker.to_string_lossy().into_owned()],
+        );
+
+        // Submit a NON-duress share
+        session.submit_share(ShareSubmission {
+            index: share_index(&shares[1]),
+            data: shares[1].clone(),
+            submitted_by: None,
+        });
+        assert!(!session.poisoned);
+        assert!(
+            !wait_for_file(&marker, Duration::from_millis(300)),
+            "alert must not fire for non-duress shares"
+        );
+
+        let _ = std::fs::remove_file(&marker);
     }
 
     /// Helper: format raw sharks share bytes as a v1 share with given options.
@@ -1727,6 +1982,7 @@ mod tests {
                 verification: Verification::None,
                 max_combinations: 100,
                 require_metadata: true,
+                duress: None,
             },
             ActionConfig::Stdout,
             false,
@@ -1770,6 +2026,7 @@ mod tests {
                 verification: Verification::None,
                 max_combinations: 100,
                 require_metadata: true,
+                duress: None,
             },
             ActionConfig::Stdout,
             false,
@@ -1804,6 +2061,7 @@ mod tests {
                 verification: Verification::None,
                 max_combinations: 100,
                 require_metadata: true,
+                duress: None,
             },
             ActionConfig::Stdout,
             false,
@@ -1847,6 +2105,7 @@ mod tests {
                 verification: Verification::None,
                 max_combinations: 100,
                 require_metadata: true,
+                duress: None,
             },
             ActionConfig::Stdout,
             false,

@@ -243,6 +243,36 @@ max_retries = 3
 
 In retry mode, the daemon keeps existing shares, returns to accepting new ones, and retries reconstruction with all available combinations. The blake3 checksum ensures only the correct combination triggers the action.
 
+## Duress shares
+
+A duress (canary) share is a tripwire: a designated share index that, when submitted, silently triggers an alert. The submission response, status counters, and daemon log output are **indistinguishable from any other accepted share** — nothing about the detection is ever logged, because logs on the host may be visible to whoever is applying the coercion. The alert program is the only notification channel.
+
+The intended pattern: generate extra shares and give each participant their regular share plus a duress share. A participant submitting under coercion uses the duress one.
+
+```bash
+# 3-of-6: shares 1-3 are regular, 4-6 are the same holders' duress shares
+echo -n "my-secret-key" | keyquorum-split -n 6 -k 3 -o files -d ./shares/
+```
+
+```toml
+[session]
+threshold = 3
+total_shares = 6
+
+[session.duress]
+indices = [4, 5, 6]       # share indices from keyquorum-split output
+mode = "alert"            # or "poison"
+alert_program = "/usr/local/bin/notify-security"
+alert_args = ["--channel", "ops"]
+```
+
+Two modes:
+
+- **`alert`** (default) — the session proceeds normally: the duress share is a real share and counts toward quorum, so the unlock still happens, but the alert fires. Choose this when blocking the unlock would itself endanger the coerced participant ("unlock under duress, but security knows").
+- **`poison`** — the session looks normal, but reconstruction silently fails with exactly the same messages as a genuine bad-share failure, and the secret is never reconstructed. To the person watching the terminal it looks like someone submitted a corrupted share. An alert program is optional in this mode.
+
+The alert program runs detached and receives no share or secret data. Note that duress shares are real Shamir shares — K duress shares alone could reconstruct the secret in alert mode, so count them in your threshold math.
+
 ## Lockdown mode
 
 For maximum security posture, enable lockdown mode via `--lockdown` flag or `lockdown = true` in config:
