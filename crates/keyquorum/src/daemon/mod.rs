@@ -15,6 +15,7 @@ pub async fn run(
     config_path: PathBuf,
     lockdown: bool,
     no_strict_hardening: bool,
+    check_config: bool,
 ) -> anyhow::Result<()> {
     // Harden process before loading any secrets
     keyquorum_core::memory::harden_process()?;
@@ -39,6 +40,14 @@ pub async fn run(
     config
         .validate_lockdown()
         .map_err(|e| anyhow::anyhow!("{}", e))?;
+
+    // --check-config: config parsed and validated above; print the effective
+    // settings (after lockdown/CLI overrides) and exit without starting
+    // anything. Print to stdout so it can be captured/diffed.
+    if check_config {
+        print_effective_config(&config, &config_path);
+        return Ok(());
+    }
 
     // Initialize logging
     let filter =
@@ -129,4 +138,79 @@ pub async fn run(
     info!("keyquorum daemon stopped");
 
     Ok(())
+}
+
+/// Print the effective configuration (after lockdown/CLI overrides) for
+/// `--check-config`. No secret material is involved here.
+fn print_effective_config(config: &Config, config_path: &std::path::Path) {
+    use keyquorum_core::config::ActionConfig;
+
+    let action = match &config.action {
+        ActionConfig::Luks { device, name } => {
+            format!("luks (device = {}, name = {})", device, name)
+        }
+        ActionConfig::Stdout => "stdout".to_string(),
+        ActionConfig::Command { program, args } => {
+            format!("command ({} {})", program, args.join(" "))
+        }
+    };
+
+    println!("config OK: {}", config_path.display());
+    println!();
+    println!("[daemon]");
+    println!(
+        "  socket_path       = {}",
+        config.daemon.socket_path.display()
+    );
+    match config.daemon.tcp_port {
+        Some(p) => println!("  tcp_port          = {} (127.0.0.1 only)", p),
+        None => println!("  tcp_port          = (disabled)"),
+    }
+    match &config.daemon.pid_file {
+        Some(p) => println!("  pid_file          = {}", p.display()),
+        None => println!("  pid_file          = (none)"),
+    }
+    println!("  lockdown          = {}", config.daemon.lockdown);
+    println!("  strict_hardening  = {}", config.daemon.strict_hardening);
+    println!();
+    println!("[session]");
+    println!("  threshold         = {}", config.session.threshold);
+    println!("  total_shares      = {}", config.session.total_shares);
+    println!("  timeout_secs      = {}", config.session.timeout_secs);
+    println!(
+        "  action_timeout_secs = {}",
+        config.session.action_timeout_secs
+    );
+    println!("  on_failure        = {:?}", config.session.on_failure);
+    println!("  max_retries       = {}", config.session.max_retries);
+    println!("  verification      = {:?}", config.session.verification);
+    println!("  max_combinations  = {}", config.session.max_combinations);
+    println!("  require_metadata  = {}", config.session.require_metadata);
+    match &config.session.duress {
+        Some(d) => {
+            println!(
+                "  duress            = {:?}, indices = {:?}{}",
+                d.mode,
+                d.indices,
+                d.alert_program
+                    .as_ref()
+                    .map(|p| format!(", alert_program = {}", p))
+                    .unwrap_or_default()
+            );
+        }
+        None => println!("  duress            = (none)"),
+    }
+    println!();
+    println!("[action]");
+    println!("  {}", action);
+    println!();
+    println!("[logging]");
+    println!("  log_participation = {}", config.logging.log_participation);
+    println!("  level             = {}", config.logging.level);
+
+    // Flag combinations worth calling out explicitly
+    if config.daemon.lockdown {
+        println!();
+        println!("note: lockdown is active — stdout action rejected, on_failure forced to wipe, strict_hardening forced on.");
+    }
 }

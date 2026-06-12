@@ -8,6 +8,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- `keyquorum verify` — offline recovery drill: reconstructs a set of shares in hardened memory purely to confirm the embedded blake3 checksum matches, then wipes everything and prints only PASS/FAIL plus which indices reconstructed. Never reveals the secret or runs an action. Threshold is read from share metadata (override with `-k`). Lets operators schedule backup-integrity checks of distributed shares.
+- `keyquorum daemon --check-config` — validate the config (applying lockdown/CLI overrides), print the effective settings, and exit without starting the daemon. Surfaces overrides (e.g. lockdown forcing `on_failure = wipe`) and rejects unknown keys.
+- `justfile` with dev recipes (`just gate` runs fmt-check + clippy + test + e2e; plus `fuzz`, `build`, `audit`).
 - Age-encrypted share output: `--output age --recipients <file>` encrypts each share to a specific recipient's age public key before writing to disk. The split operator never sees plaintext shares. One `age1...` key per line in the recipients file (line order = share order). In lockdown mode, recipient count must exactly match share count.
 - `--armor` / `--armour` flag for ASCII-armored age output (`.age.txt` files), useful for text-based channels (Signal, email, etc.)
 - `action_timeout_secs` config option (default 120) — bounds post-reconstruction action execution. Previously a hung action (stuck cryptsetup, command that never exits) blocked the session task forever, freezing all clients and bypassing the session timeout. On timeout the child process is killed, shares are wiped, and the session resets.

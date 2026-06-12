@@ -582,6 +582,65 @@ else
 fi
 
 # --------------------------------------------------------------------------
+echo "--- Test: recovery_drill_verify ---"
+SECRET="recovery-drill-e2e-secret"
+echo -n "$SECRET" | "$KQ_SPLIT" -n 5 -k 3 --no-strict-hardening -o files -d "$WORK/rd-shares/" 2>/dev/null
+
+# PASS: a valid quorum, threshold read from metadata
+VOUT=$("$KQ" verify "$WORK/rd-shares/share-1.txt" "$WORK/rd-shares/share-2.txt" "$WORK/rd-shares/share-3.txt" 2>&1)
+VRC=$?
+if [ "$VRC" -eq 0 ] && echo "$VOUT" | grep -q "PASS"; then
+    pass "verify PASS on a valid quorum"
+else
+    fail "verify did not PASS valid quorum (rc=$VRC): $VOUT"
+fi
+
+# Must not leak the secret in output
+if echo "$VOUT" | grep -q "$SECRET"; then
+    fail "verify leaked the secret in its output"
+else
+    pass "verify did not reveal the secret"
+fi
+
+# FAIL: below threshold (exit 1)
+if "$KQ" verify -k 3 "$WORK/rd-shares/share-1.txt" "$WORK/rd-shares/share-2.txt" >/dev/null 2>&1; then
+    fail "verify should fail below threshold"
+else
+    pass "verify exits nonzero below threshold"
+fi
+
+# FAIL: mixed splits reconstruct nothing valid (parse OK, wrong combination)
+echo -n "other-split" | "$KQ_SPLIT" -n 5 -k 3 --no-strict-hardening -o files -d "$WORK/rd-other/" 2>/dev/null
+MIXOUT=$("$KQ" verify -k 3 "$WORK/rd-shares/share-1.txt" "$WORK/rd-shares/share-2.txt" "$WORK/rd-other/share-3.txt" 2>&1 || true)
+if echo "$MIXOUT" | grep -qi "no combination"; then
+    pass "verify FAILs on shares from different splits"
+else
+    fail "verify did not report mixed-split failure: $MIXOUT"
+fi
+
+# --------------------------------------------------------------------------
+echo "--- Test: check_config ---"
+write_config "$WORK/cc.toml" "$WORK/cc.sock" 2 3
+CCOUT=$("$KQ" daemon -c "$WORK/cc.toml" --check-config 2>&1)
+if echo "$CCOUT" | grep -q "config OK" && echo "$CCOUT" | grep -q "threshold         = 2"; then
+    pass "--check-config prints effective settings"
+else
+    fail "--check-config output unexpected: $CCOUT"
+fi
+# Invalid config exits nonzero
+if echo "[daemon]
+badkey = 1
+[session]
+threshold = 2
+total_shares = 3
+[action]
+type = \"stdout\"" > "$WORK/cc-bad.toml" && "$KQ" daemon -c "$WORK/cc-bad.toml" --check-config >/dev/null 2>&1; then
+    fail "--check-config accepted an invalid config"
+else
+    pass "--check-config rejects invalid config (nonzero exit)"
+fi
+
+# --------------------------------------------------------------------------
 echo "--- Test: duress_poison ---"
 SECRET="duress-poison-test"
 SOCK="$WORK/duress.sock"

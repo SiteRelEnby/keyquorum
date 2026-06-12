@@ -28,6 +28,10 @@ enum Commands {
         /// protections (mlock, madvise) fail. Not recommended for production.
         #[arg(long)]
         no_strict_hardening: bool,
+        /// Validate the config (applying lockdown/CLI overrides), print the
+        /// effective settings, and exit without starting the daemon.
+        #[arg(long)]
+        check_config: bool,
     },
     /// Submit a share to the running daemon.
     /// Share data is always read from stdin (pipe a file or type interactively).
@@ -53,6 +57,21 @@ enum Commands {
         #[arg(short, long)]
         config: Option<PathBuf>,
     },
+    /// Offline recovery drill: verify that a set of shares still reconstructs
+    /// a checksum-valid secret, WITHOUT revealing it or running any action.
+    /// Give one decrypted share per file. Requires shares with the embedded
+    /// blake3 checksum (the keyquorum-split default).
+    Verify {
+        /// Share files to verify (one share per file)
+        #[arg(required = true)]
+        files: Vec<PathBuf>,
+        /// Threshold K (defaults to the value in share metadata, if present)
+        #[arg(short = 'k', long)]
+        threshold: Option<u8>,
+        /// Maximum share combinations to try
+        #[arg(long, default_value_t = 100)]
+        max_combinations: usize,
+    },
 }
 
 /// Resolve the socket address: --socket wins, then --config, then default.
@@ -77,7 +96,8 @@ async fn main() -> anyhow::Result<()> {
             config,
             lockdown,
             no_strict_hardening,
-        } => daemon::run(config, lockdown, no_strict_hardening).await,
+            check_config,
+        } => daemon::run(config, lockdown, no_strict_hardening, check_config).await,
         Commands::Submit {
             user,
             socket,
@@ -90,5 +110,10 @@ async fn main() -> anyhow::Result<()> {
             let socket = resolve_socket(socket, config)?;
             client::status::run(socket).await
         }
+        Commands::Verify {
+            files,
+            threshold,
+            max_combinations,
+        } => keyquorum::verify::run(files, threshold, max_combinations),
     }
 }

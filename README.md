@@ -164,6 +164,22 @@ When the threshold is reached, the secret is reconstructed and the configured ac
 
 The config field `verification` controls this (default: `"embedded-blake3"`). Set to `"none"` only if shares were generated with `--no-checksum`.
 
+### Recovery drill — verifying shares offline
+
+Distributed shares rot: people lose them, copy them wrong, or hand back the wrong file. `keyquorum verify` lets you confirm a set of shares still reconstructs **without revealing the secret or running any action** — it reconstructs in hardened memory purely to check the embedded blake3 checksum, then wipes everything and prints only a verdict:
+
+```bash
+keyquorum verify ./shares/share-1.txt ./shares/share-2.txt ./shares/share-3.txt
+# PASS: a quorum of 3 share(s) reconstructs a checksum-valid 27-byte secret.
+#       Verified using share indices [1, 2, 3]. The secret was NOT revealed.
+```
+
+The threshold is read from share metadata when present (override with `-k`). This needs the embedded checksum (the split default); shares made with `--no-checksum` can't be verified without revealing the secret, and `verify` says so. Decrypt any `age` shares to plaintext first. Run it on a schedule as a backup-integrity check.
+
+## Checking config
+
+`keyquorum daemon --check-config` validates the config (applying lockdown and CLI overrides), prints the **effective** settings, and exits without starting anything — useful for catching a misconfiguration before a ceremony rather than during one. It surfaces overrides explicitly (e.g. lockdown forcing `on_failure` to `wipe`), and unknown keys are a hard error.
+
 ## Share format
 
 keyquorum uses a versioned share format (V1) with layered options for integrity and metadata. keyquorum is designed for a wide range of threat models and desired failure modes, and not all options will be appropriate for your use case — read this section before protecting anything valuable.

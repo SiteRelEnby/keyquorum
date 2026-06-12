@@ -551,7 +551,8 @@ impl Session {
 
 /// Lazy iterator over all k-sized combinations of indices 0..n.
 /// Yields one combo at a time without pre-allocating all C(n,k) results.
-struct ComboIter {
+/// Shared with the offline verifier (`crate::verify`).
+pub(crate) struct ComboIter {
     indices: Vec<usize>,
     n: usize,
     k: usize,
@@ -559,7 +560,7 @@ struct ComboIter {
 }
 
 impl ComboIter {
-    fn new(n: usize, k: usize) -> Self {
+    pub(crate) fn new(n: usize, k: usize) -> Self {
         if k == 0 || k > n {
             return Self {
                 indices: Vec::new(),
